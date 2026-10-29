@@ -1,0 +1,25 @@
+# Ad ogni push su main release-please legge i Conventional Commits e tiene aggiornata una "release PR"
+# (versione semantica, CHANGELOG.md, version.txt, versionName). Unendo la release PR crea il tag vX.Y.Z
+# e la GitHub Release, a cui GitHub allega automaticamente i sorgenti. Nessuna compilazione.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          # Con un token personale nel secret RELEASE_PLEASE_TOKEN la release PR fa partire anche i controlli
+          # richiesti dalla protezione di main (le PR create con GITHUB_TOKEN non avviano altri workflow).
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

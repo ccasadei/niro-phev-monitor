@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.NiroWatchdog" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">#38E0B2</item>
+        <item name="colorSecondary">#2D73D2</item>
+        <item name="android:statusBarColor">#0B0E13</item>
+    </style>
+</resources>

@@ -1,0 +1,22 @@
+# Gradle / Android build
+.gradle/
+build/
+app/build/
+.kotlin/
+*.apk
+*.aab
+
+# Configurazione della macchina locale (sdk.dir, percorsi, dispositivi di test)
+local.properties
+CLAUDE.local.md
+
+# Dati catturati dal veicolo: restano fuori dal repository
+niro_sg2_uds_dump*.json
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Worktree di lavoro
+.claude/worktrees/

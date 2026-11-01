@@ -2,7 +2,7 @@
 
 Telemetria **non ufficiale** per la **Kia Niro SG2 PHEV (2024)** su **Android Auto**, letta dalla presa OBD-II con un dongle ELM327 Bluetooth.
 
-> **In English** — Unofficial telemetry app for the Kia Niro SG2 PHEV (2024). It reads the car's diagnostic data (HV battery, cells, engine, odometer) through a Bluetooth ELM327 OBD-II dongle and shows it full-screen on Android Auto, with an automatic trip log of distance, battery energy and estimated fuel. Documentation and UI are in Italian.
+> **In English** — Unofficial telemetry app for the Kia Niro SG2 PHEV (2024). It reads the car's diagnostic data (HV battery, cells, engine, odometer) through a Bluetooth ELM327 OBD-II dongle and shows it full-screen on Android Auto, with an automatic trip log of distance, battery energy and estimated fuel. Documentation and UI are in Italian. If you find it useful, you can support it via [PayPal](https://paypal.me/ccasadei74).
 
 > [!IMPORTANT]
 > Progetto personale e **non ufficiale**, non affiliato né approvato da Kia. "Kia" e "Niro" sono marchi dei rispettivi proprietari. L'app legge soltanto dati diagnostici e non scrive nulla sulle centraline, ma la usi a tuo rischio. Non interagire con l'app mentre guidi.
@@ -61,6 +61,16 @@ Al primo avvio concedi i permessi Bluetooth e scegli il dongle. In auto non serv
 * Le modifiche arrivano su `main` tramite pull request unite in **squash**.
 * Il titolo della PR segue i [Conventional Commits](https://www.conventionalcommits.org/it/) (`feat:`, `fix:`, `perf:`, `docs:`, ...).
 * [release-please](https://github.com/googleapis/release-please) calcola da lì versione, `CHANGELOG.md`, tag e GitHub Release.
+
+## Sostieni il progetto
+
+Niro PHEV Monitor è gratuito e sviluppato nel tempo libero. Se ti è utile, puoi offrirmi qualcosa con PayPal:
+
+* [☕ Un caffè — 3 €](https://paypal.me/ccasadei74/3EUR)
+* [🍕 Una pizza — 10 €](https://paypal.me/ccasadei74/10EUR)
+* [💚 Importo libero](https://paypal.me/ccasadei74)
+
+Gli importi sono solo suggerimenti: puoi sempre cambiarli prima di confermare. Grazie!
 
 ## Autore
 

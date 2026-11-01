@@ -186,12 +186,13 @@ Gli offset sono stati ricavati e verificati su catture reali del bus CAN della *
   * `220105` ogni ~48 s.
   Tutte le letture del ciclo sono pubblicate con un'unica `StateFlow.update {}`: un solo ridisegno per ciclo e nessuna modifica concorrente persa (es. l'azzeramento del viaggio).
 * **Rendering Android Auto**: Paint/colori/Path allocati una volta, auto-fit del testo con una sola `measureText`, richieste di ridisegno raggruppate (max ~15 fps), ticker a 1 s attivo solo per countdown e indicatore di dati fermi; se un frame non si riesce a disegnare (surface non valida) si riprova dopo 250 ms.
-* **Rendering GPU (`lockHardwareCanvas`) provato e scartato** (ottobre 2026, DHU 1190×460, telefono Android 16 con GPU Mali, demo pagina 1):
-  * **Costo:**
+* **Rendering GPU (`lockHardwareCanvas`): opzione sperimentale, spenta di default.** Si attiva con l'interruttore "Rendering GPU su Android Auto" dell'app telefono (preferenza `gpu_rendering` in `niro_monitor`) e vale dalla surface successiva: la scelta CPU/GPU si fa una volta per surface, perché una surface già disegnata dalla GPU non accetta più il Canvas software. Il log `NiroRender` riporta ogni 20 frame il tempo medio e massimo di disegno.
+  * In auto (1° novembre 2026, display Niro 1785×690 a 240 dpi) ha funzionato su 4 surface senza crash, a ~7-18 ms per frame; produce però molte righe innocue `FrameEvents: applyDelta: Bad index` nel logcat.
+  * Misure sul DHU (ottobre 2026, 1190×460, telefono Android 16 con GPU Mali, demo pagina 1):
     * main thread per frame: CPU ~22,5 ms contro GPU ~9,5 ms;
     * CPU totale del processo: GPU **+30%** (2,9 s/min contro 2,2 s/min), per `RenderThread` e driver Mali;
     * a ~1 frame/s il main thread non è un collo di bottiglia.
-  * **Rischio:** quando Android Auto riconsegna a un processo appena riavviato la surface già usata via CPU, `eglCreateWindowSurface` fallisce ("already connected to another API") e HWUI va in **abort nativo** ("drawRenderNode called on a context with no surface!"). Non è intercettabile con try/catch e Android Auto riavvia l'app in loop.
+  * **Rischio:** quando Android Auto riconsegna a un processo appena riavviato la surface già usata via CPU, `eglCreateWindowSurface` fallisce ("already connected to another API") e HWUI va in **abort nativo** ("drawRenderNode called on a context with no surface!"). Non è intercettabile con try/catch e Android Auto riavvia l'app in loop. Per uscirne basta spegnere l'interruttore nell'app telefono: al riavvio successivo si torna alla CPU.
 * **Test JVM** (nessun dispositivo necessario):
 ```bash
 gradle testDebugUnitTest

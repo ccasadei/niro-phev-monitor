@@ -1,9 +1,12 @@
 package com.casadei.nirowatchdog.car
 
+import android.content.Context
 import android.graphics.*
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
+import android.view.Surface
 import androidx.car.app.AppManager
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
@@ -22,6 +25,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.max
@@ -47,6 +51,14 @@ class CockpitSurfaceScreen(
         const val MODE_GAUGES_6 = 1
         const val MODE_CELLS_96 = 2
         const val MODE_COCKPIT_LIVE = 3
+
+        /** Preferenze condivise con l'app telefono (interruttore del rendering GPU sperimentale) */
+        const val PREFS_NAME = "niro_monitor"
+        const val PREF_GPU_RENDERING = "gpu_rendering"
+
+        private const val TAG = "NiroRender"
+        /** Ogni quanti frame scrivere nel log il tempo di disegno (medio e massimo) sul main thread */
+        private const val FRAME_STATS_WINDOW = 20
 
         /** Intervallo minimo tra due frame (~15 fps): nuovi dati, tap e scroll ravvicinati diventano un solo disegno */
         private const val MIN_FRAME_INTERVAL_MS = 66L
@@ -97,6 +109,14 @@ class CockpitSurfaceScreen(
     private var surfaceContainer: SurfaceContainer? = null
     private var visibleRect: Rect = Rect()
     private val renderLock = Any()
+
+    // Rendering via CPU (lockCanvas) o via GPU (lockHardwareCanvas, sperimentale). Si decide una volta per
+    // surface: una surface già disegnata dalla GPU non può più essere bloccata con il Canvas software.
+    private var useHardwareCanvas = false
+    private var hardwareFramesOnSurface = 0
+    private var statFrames = 0
+    private var statTotalNs = 0L
+    private var statMaxNs = 0L
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val renderScheduled = AtomicBoolean(false)
@@ -201,12 +221,20 @@ class CockpitSurfaceScreen(
 
     private val surfaceCallback = object : SurfaceCallback {
         override fun onSurfaceAvailable(container: SurfaceContainer) {
+            val gpu = carContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getBoolean(PREF_GPU_RENDERING, false)
             synchronized(renderLock) {
                 surfaceContainer = container
+                useHardwareCanvas = gpu
+                hardwareFramesOnSurface = 0
+                statFrames = 0
+                statTotalNs = 0L
+                statMaxNs = 0L
                 if (visibleRect.width() <= 0 || visibleRect.height() <= 0) {
                     visibleRect = Rect(0, 0, container.width, container.height)
                 }
             }
+            Log.i(TAG, "Surface ${container.width}x${container.height} (${container.dpi} dpi): rendering ${if (gpu) "GPU" else "CPU"}")
             requestRender()
         }
 
@@ -373,11 +401,8 @@ class CockpitSurfaceScreen(
             val h = container.height.toFloat()
             if (w <= 10f || h <= 10f) return true
 
-            val canvas = try {
-                surface.lockCanvas(null)
-            } catch (_: Exception) {
-                null
-            } ?: return false
+            val startNs = System.nanoTime()
+            val canvas = lockCanvas(surface) ?: return false
 
             try {
                 drawFullDashboard(canvas, w, h, visibleRect, latestState, currentMode)
@@ -387,7 +412,54 @@ class CockpitSurfaceScreen(
                 } catch (_: Exception) {
                 }
             }
+            if (useHardwareCanvas) hardwareFramesOnSurface++
+            recordFrameTime(System.nanoTime() - startNs)
             return true
+        }
+    }
+
+    private fun lockCanvas(surface: Surface): Canvas? {
+        if (useHardwareCanvas) {
+            try {
+                return surface.lockHardwareCanvas()
+            } catch (e: Exception) {
+                // Dopo il primo frame GPU la surface non accetta più il Canvas software: si ritenta al prossimo frame
+                if (hardwareFramesOnSurface > 0) {
+                    Log.w(TAG, "lockHardwareCanvas fallito", e)
+                    return null
+                }
+                Log.w(TAG, "lockHardwareCanvas non disponibile su questa surface: rendering CPU", e)
+                useHardwareCanvas = false
+            }
+        }
+        return try {
+            surface.lockCanvas(null)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Tempo sul main thread di ogni frame (lock + disegno + post), riassunto nel log ogni [FRAME_STATS_WINDOW] frame. */
+    private fun recordFrameTime(elapsedNs: Long) {
+        statFrames++
+        statTotalNs += elapsedNs
+        if (elapsedNs > statMaxNs) statMaxNs = elapsedNs
+        if (statFrames >= FRAME_STATS_WINDOW) {
+            Log.i(
+                TAG,
+                String.format(
+                    Locale.US,
+                    "%s pagina %d: %d frame, media %.2f ms, max %.2f ms",
+                    if (useHardwareCanvas) "GPU" else "CPU",
+                    currentMode,
+                    statFrames,
+                    statTotalNs / statFrames / 1_000_000.0,
+                    statMaxNs / 1_000_000.0
+                )
+            )
+            statFrames = 0
+            statTotalNs = 0L
+            statMaxNs = 0L
         }
     }
 

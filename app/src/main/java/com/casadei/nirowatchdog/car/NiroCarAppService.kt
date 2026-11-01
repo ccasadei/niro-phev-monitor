@@ -5,12 +5,14 @@ import androidx.car.app.CarAppService
 import androidx.car.app.Screen
 import androidx.car.app.Session
 import androidx.car.app.validation.HostValidator
-import androidx.lifecycle.DefaultLifecycleObserver
-import androidx.lifecycle.LifecycleOwner
 import com.casadei.nirowatchdog.obd.TelemetryRepository
 
 /**
  * Servizio Android Auto per Kia Niro SG2 Watchdog.
+ *
+ * Android Auto avvia il servizio appena si collega all'auto, anche se la schermata di Niro Monitor non viene
+ * aperta, e lo distrugge quando si scollega: il polling OBD (e quindi il registro viaggi) segue questo ciclo
+ * di vita, così copre l'intero viaggio.
  */
 class NiroCarAppService : CarAppService() {
 
@@ -19,22 +21,25 @@ class NiroCarAppService : CarAppService() {
         return HostValidator.ALLOW_ALL_HOSTS_VALIDATOR
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        TelemetryRepository.init(this)
+        TelemetryRepository.autoConnectFromCarSession(this)
+    }
+
+    override fun onDestroy() {
+        // Android Auto scollegato: il polling aperto dall'auto si ferma dopo un breve margine e il viaggio si chiude
+        TelemetryRepository.onCarSessionEnded()
+        super.onDestroy()
+    }
+
     override fun onCreateSession(): Session = NiroCarSession()
 }
 
 class NiroCarSession : Session() {
-
-    init {
-        lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onDestroy(owner: LifecycleOwner) {
-                // A vettura spenta / Android Auto disconnesso chiude l'OBD aperto dall'auto (dopo un breve margine)
-                TelemetryRepository.onCarSessionEnded()
-            }
-        })
-    }
-
     override fun onCreateScreen(intent: Intent): Screen {
-        // Avvia automaticamente il collegamento OBD-II (es. Android-Vlink) non appena si apre su Android Auto
+        // Riapre il collegamento OBD (es. Android-Vlink) se non è attivo o era andato in pausa
+        TelemetryRepository.init(carContext)
         TelemetryRepository.autoConnectFromCarSession(carContext)
         return CockpitSurfaceScreen(carContext)
     }

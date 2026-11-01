@@ -46,4 +46,6 @@ dependencies {
     implementation(libs.car.app.projected)
     testImplementation(libs.car.app.testing)
     testImplementation(libs.junit)
+    // org.json reale per i test del registro viaggi (quello di android.jar è solo uno stub)
+    testImplementation(libs.org.json)
 }

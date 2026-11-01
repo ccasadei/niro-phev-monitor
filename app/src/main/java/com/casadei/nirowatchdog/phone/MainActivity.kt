@@ -18,6 +18,7 @@ import android.text.method.ScrollingMovementMethod
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.*
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -42,11 +43,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusView: TextView
     private lateinit var liveSummaryView: TextView
     private lateinit var dumpOutputView: TextView
+    private lateinit var tripsView: TextView
     private lateinit var deviceSpinner: Spinner
     private var lastJsonDump: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        TelemetryRepository.init(this)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -175,6 +178,48 @@ class MainActivity : AppCompatActivity() {
             ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = 16 })
 
+        // Registro viaggi: si compila da solo durante le sessioni Android Auto
+        val tripsHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 24, 0, 8)
+        }
+        tripsHeader.addView(TextView(this).apply {
+            text = "Registro viaggi:"
+            textSize = 13f
+            setTextColor(Color.parseColor("#38E0B2"))
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        tripsHeader.addView(Button(this).apply {
+            text = "Esporta CSV"
+            textSize = 11f
+            setBackgroundColor(Color.parseColor("#2F384B"))
+            setTextColor(Color.WHITE)
+            setOnClickListener { shareTripsCsv() }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            rightMargin = 8
+        })
+        tripsHeader.addView(Button(this).apply {
+            text = "Azzera"
+            textSize = 11f
+            setBackgroundColor(Color.parseColor("#2F384B"))
+            setTextColor(Color.WHITE)
+            setOnClickListener { confirmClearTrips() }
+        })
+        root.addView(tripsHeader)
+
+        tripsView = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.parseColor("#DCE5F5"))
+            setBackgroundColor(Color.parseColor("#12161F"))
+            setPadding(24, 24, 24, 24)
+            movementMethod = ScrollingMovementMethod()
+        }
+        root.addView(tripsView, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            0,
+            2f
+        ))
+
         val dumpTitle = TextView(this).apply {
             text = "Log Esadecimale Grezzo Scanner UDS SG2:"
             textSize = 13f
@@ -218,6 +263,12 @@ class MainActivity : AppCompatActivity() {
                             appendLine("Termico: ${s.iceRpm} rpm • ${"%.1f".format(s.instantFuelL100km)} L/100km (${"%.1f".format(s.instantFuelLh)} L/h) • ${s.vehicleSpeedKmh} km/h")
                             append("Celle (96): Min ${"%.2f".format(s.cellVoltageMin)}V / Max ${"%.2f".format(s.cellVoltageMax)}V (ΔV ${s.cellDeltaMv} mV)  |  ECT: ${s.iceCoolantTemp}°C")
                         }
+                    }
+                }
+
+                launch {
+                    TelemetryRepository.trips.collectLatest { log ->
+                        tripsView.text = TripLogText.format(log, System.currentTimeMillis())
                     }
                 }
 
@@ -325,5 +376,27 @@ class MainActivity : AppCompatActivity() {
             putExtra(Intent.EXTRA_TEXT, report)
         }
         startActivity(Intent.createChooser(sendIntent, "Condividi Dump UDS Niro SG2"))
+    }
+
+    private fun shareTripsCsv() {
+        val csv = TelemetryRepository.exportTripsCsv()
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Niro Monitor - registro viaggi", csv))
+
+        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "Niro Monitor - registro viaggi (CSV)")
+            putExtra(Intent.EXTRA_TEXT, csv)
+        }
+        startActivity(Intent.createChooser(sendIntent, "Esporta registro viaggi"))
+    }
+
+    private fun confirmClearTrips() {
+        AlertDialog.Builder(this)
+            .setTitle("Azzerare il registro viaggi?")
+            .setMessage("Tutti i viaggi registrati sul telefono verranno cancellati.")
+            .setPositiveButton("Azzera") { _, _ -> TelemetryRepository.clearTrips() }
+            .setNegativeButton("Annulla", null)
+            .show()
     }
 }

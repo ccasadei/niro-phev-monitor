@@ -156,15 +156,21 @@ Gli offset sono stati ricavati e verificati su catture reali del bus CAN della *
 * **Icona Adattiva Full-Bleed**:
   * Per evitare bordi bianchi attorno all'icona sia sul launcher del telefono sia su Android Auto, lo sfondo adattivo in [`colors.xml`](app/src/main/res/values/colors.xml) usa `#0E1520` (identico al bordo esterno dell'icona) e il foreground è il PNG `@mipmap/ic_launcher_foreground` (una versione per densità in `mipmap-*dpi/`), referenziato da [`mipmap-anydpi-v26/ic_launcher.xml`](app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml).
 * **Auto-Connessione OBD**:
-  * All'avvio della sessione di [`NiroCarAppService`](app/src/main/java/com/casadei/nirowatchdog/car/NiroCarAppService.kt), se il polling live non è già attivo (connesso, in connessione o in attesa di riconnessione) cerca tra i dispositivi Bluetooth associati un nome tipo `Android-Vlink` / `V-LINK` / `OBD` / `ELM` / `Vgate` e avvia il polling. In auto **non** ripiega sul primo dispositivo associato, che potrebbe essere l'autoradio o un auricolare.
-  * Se il live era già stato avviato dal telefono, la sessione Android Auto lo "adotta" senza riconnettere. Quando la sessione termina, il polling dell'auto si ferma dopo 20 s; se nel frattempo la sessione si ricrea, prosegue senza riconnettere.
+  * Android Auto avvia [`NiroCarAppService`](app/src/main/java/com/casadei/nirowatchdog/car/NiroCarAppService.kt) appena si collega all'auto, **anche se la schermata di Niro Monitor non viene aperta**, e lo distrugge quando si scollega (verificato nei log: il servizio parte un minuto dopo il collegamento di Android Auto e non con le attivazioni notturne di `gearhead`). Il polling segue questo ciclo di vita: parte in `onCreate()` del servizio e si ferma 20 s dopo `onDestroy()`; se nel frattempo il servizio si ricrea, prosegue senza riconnettere. Aprire la schermata riavvia il polling se era andato in pausa.
+  * Se il polling live non è già attivo (connesso, in connessione o in attesa di riconnessione), cerca tra i dispositivi Bluetooth associati un nome tipo `Android-Vlink` / `V-LINK` / `OBD` / `ELM` / `Vgate`. In auto **non** ripiega sul primo dispositivo associato, che potrebbe essere l'autoradio o un auricolare. Un live già avviato dal telefono viene "adottato" dall'auto senza riconnettere.
+* **Registro viaggi** ([`TripRecorder`](app/src/main/java/com/casadei/nirowatchdog/obd/TripRecorder.kt), sezione "Registro viaggi" dell'app telefono):
+  * un viaggio va dal primo ciclo di polling con risposta BMS valida fino allo stop del polling (Android Auto scollegato, demo, scansione) o a una pausa senza dati di oltre 5 minuti;
+  * **distanza** dall'odometro del cruscotto (`7C6 22B002`) per i viaggi da 10 km in su, altrimenti dalla velocità integrata; km in EV puro dalla velocità con termico spento;
+  * **batteria HV** dai contatori cumulativi del BMS (`22 01 01` `d[38..45]`, 0,1 kWh): erogati, rientrati (frenata e ricarica dal termico) e netti, più SoC iniziale e finale;
+  * **benzina** stimata integrando nel tempo il consumo istantaneo calcolato dal MAF (L/h): è una stima, non una misura;
+  * salvataggio in `files/trips.json` ogni 30 s e a fine viaggio: un viaggio interrotto dalla chiusura del processo viene ripreso (pausa breve) o archiviato al riavvio. Esportazione CSV con `;` e virgola decimale.
 
 ---
 
 ## 5. Robustezza del Polling OBD e Test
 
 * **Un'attività alla volta** ([`TelemetryRepository`](app/src/main/java/com/casadei/nirowatchdog/obd/TelemetryRepository.kt)): demo, live e scansione si sostituiscono a vicenda tramite `launchExclusive`, che chiude subito il socket del job precedente (sblocca `connect()`/`read()` bloccanti) e fa partire il nuovo solo dopo la sua terminazione. Il dongle SPP accetta una sola connessione: `dongleMutex` in `withElmLink` garantisce comunque un solo socket aperto.
-* **Riconnessione automatica**: su errore Bluetooth, dongle muto (3 comandi senza prompt `>`), dongle riavviato da solo (banner `ELM327` fuori da `ATZ`) o BMS che non risponde per 8 cicli, chiude il socket e riprova con attesa crescente 1 s → 30 s. Il live avviato dal telefono va in pausa dopo 6 tentativi consecutivi senza dati; quello dell'auto riprova finché dura la sessione.
+* **Riconnessione automatica**: su errore Bluetooth, dongle muto (3 comandi senza prompt `>`), dongle riavviato da solo (banner `ELM327` fuori da `ATZ`) o BMS che non risponde per 8 cicli, chiude il socket e riprova con attesa crescente 1 s → 30 s. Il live avviato dal telefono va in pausa dopo 6 tentativi consecutivi senza dati, quello dell'auto dopo 12 (~6-8 minuti: con l'auto accesa il BMS risponde, quindi indica un dongle scollegato o assente).
 * **Canale ELM327** ([`ElmLink`](app/src/main/java/com/casadei/nirowatchdog/obd/ElmLink.kt)):
   * scarta i byte residui prima di ogni comando;
   * invia `ATSH` solo quando cambia centralina;
@@ -190,4 +196,4 @@ Gli offset sono stati ricavati e verificati su catture reali del bus CAN della *
 ```bash
 gradle testDebugUnitTest
 ```
-  `Sg2PidParserTest` decodifica risposte ELM327 reali incluse nel test (frame persi/duplicati, padding, NRC 0x78, messaggi ELM, SOH, odometro sintetico). `ElmLinkTest` simula un ELM327 (ATSH, suffisso `1` e relativi fallback, risposte tardive, centralina sbagliata, dongle muto o riavviato).
+  `Sg2PidParserTest` decodifica risposte ELM327 reali incluse nel test (frame persi/duplicati, padding, NRC 0x78, messaggi ELM, SOH, odometro sintetico). `ElmLinkTest` simula un ELM327 (ATSH, suffisso `1` e relativi fallback, risposte tardive, centralina sbagliata, dongle muto o riavviato). `TripRecorderTest` e `TripLogTextTest` coprono il registro viaggi (integrazione di distanza e benzina, contatori BMS, odometro, pause, ripresa dopo riavvio, file JSON, CSV e testo mostrato).

@@ -8,6 +8,7 @@ Questo documento raccoglie tutte le conoscenze tecniche, le procedure di install
 
 Requisiti: JDK 17, Android SDK (compileSdk 34) e Gradle 8.9 (il repository non include il Gradle wrapper). Le impostazioni della macchina locale (percorsi della toolchain, dispositivi di test) vanno in `CLAUDE.local.md` e `local.properties`, entrambi esclusi da git.
 
+* **Repository**: [`github.com/ccasadei/niro-phev-monitor`](https://github.com/ccasadei/niro-phev-monitor) (il progetto Gradle si chiama ancora `niro-monitor`)
 * **Package**: `com.casadei.nirowatchdog`
 * **Interfaccia OBD-II**: dongle ELM327 Bluetooth Classic (es. Vgate vLinker / "Android-Vlink"), profilo SPP UUID `00001101-0000-1000-8000-00805F9B34FB`, da associare al telefono prima dell'uso.
 

@@ -20,11 +20,13 @@ import android.view.ViewGroup
 import android.widget.*
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.SwitchCompat
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.casadei.nirowatchdog.car.CockpitSurfaceScreen
 import com.casadei.nirowatchdog.obd.TelemetryRepository
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -177,6 +179,27 @@ class MainActivity : AppCompatActivity() {
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = 16 })
+
+        // Rendering GPU sperimentale della schermata Android Auto: vale dalla prossima surface
+        val prefs = getSharedPreferences(CockpitSurfaceScreen.PREFS_NAME, Context.MODE_PRIVATE)
+        val gpuSwitch = SwitchCompat(this).apply {
+            text = "Rendering GPU su Android Auto (sperimentale)"
+            textSize = 13f
+            setTextColor(Color.parseColor("#DCE5F5"))
+            isChecked = prefs.getBoolean(CockpitSurfaceScreen.PREF_GPU_RENDERING, false)
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean(CockpitSurfaceScreen.PREF_GPU_RENDERING, checked).apply()
+                Toast.makeText(
+                    this@MainActivity,
+                    "Attivo alla prossima apertura di Niro Monitor su Android Auto",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+        root.addView(gpuSwitch, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = 12 })
 
         // Registro viaggi: si compila da solo durante le sessioni Android Auto
         val tripsHeader = LinearLayout(this).apply {

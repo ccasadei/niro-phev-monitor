@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0](https://github.com/ccasadei/niro-phev-monitor/compare/v1.0.0...v1.1.0) (2026-11-01)
+
+
+### Novità
+
+* interruttore per il rendering GPU su Android Auto (sperimentale) ([2c887f2](https://github.com/ccasadei/niro-phev-monitor/commit/2c887f2c821e382e825fbd41172d7f889b9588fb))
+* registro viaggi con avvio automatico del polling all'avvio di Android Auto ([7b57638](https://github.com/ccasadei/niro-phev-monitor/commit/7b57638b85674864ed0f04ad4621c97a9dd085aa))
+
+
+### Correzioni
+
+* registro viaggi leggibile anche su schermi bassi ([c207248](https://github.com/ccasadei/niro-phev-monitor/commit/c207248cd1f1037c1fd481e7e64a52244ffdc6d7))
+
 ## 1.0.0 (2026-10-29)
 
 Prima versione pubblica di Niro Monitor: telemetria della Kia Niro SG2 PHEV via dongle ELM327 Bluetooth, mostrata su Android Auto e sul telefono.

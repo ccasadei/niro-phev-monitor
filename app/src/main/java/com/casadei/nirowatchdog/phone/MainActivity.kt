@@ -14,7 +14,6 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
-import android.text.method.ScrollingMovementMethod
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.*
@@ -53,14 +52,11 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         TelemetryRepository.init(this)
 
+        // Contenuto in una pagina scorrevole: su schermi bassi registro viaggi e log restano leggibili
+        // invece di essere schiacciati sotto i pulsanti
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#0B0E13"))
             setPadding(40, 48, 40, 40)
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
         }
 
         val title = TextView(this).apply {
@@ -235,12 +231,10 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.parseColor("#DCE5F5"))
             setBackgroundColor(Color.parseColor("#12161F"))
             setPadding(24, 24, 24, 24)
-            movementMethod = ScrollingMovementMethod()
         }
         root.addView(tripsView, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            0,
-            2f
+            ViewGroup.LayoutParams.WRAP_CONTENT
         ))
 
         val dumpTitle = TextView(this).apply {
@@ -258,15 +252,20 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.parseColor("#DCE5F5"))
             setBackgroundColor(Color.parseColor("#12161F"))
             setPadding(24, 24, 24, 24)
-            movementMethod = ScrollingMovementMethod()
         }
         root.addView(dumpOutputView, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            0,
-            1f
+            ViewGroup.LayoutParams.WRAP_CONTENT
         ))
 
-        setContentView(root)
+        setContentView(ScrollView(this).apply {
+            setBackgroundColor(Color.parseColor("#0B0E13"))
+            isFillViewport = true
+            addView(root, ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+        })
 
         checkBluetoothPermissionsAndLoadDevices()
         observeRepository()

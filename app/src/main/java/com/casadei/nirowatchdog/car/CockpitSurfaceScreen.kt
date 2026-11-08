@@ -21,6 +21,7 @@ import androidx.lifecycle.lifecycleScope
 import com.casadei.nirowatchdog.R
 import com.casadei.nirowatchdog.obd.NiroTelemetryState
 import com.casadei.nirowatchdog.obd.TelemetryRepository
+import com.casadei.nirowatchdog.obd.TripLog
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -37,7 +38,7 @@ import kotlin.math.min
  * - Nessun header superiore: i gauge e i grafici occupano l'intera altezza dello schermo.
  * - Tutte le informazioni di stato (Titolo, EV/HEV, Connessione OBD, Pagina attiva e Firma)
  *   sono raccolte nella barra footer compatta in basso.
- * - Cambio pagina circolare (6 Gauge -> 96 Celle -> Cockpit -> 6 Gauge) toccando lo schermo,
+ * - Cambio pagina circolare (6 Gauge -> 96 Celle -> Cockpit -> Viaggio -> 6 Gauge) toccando lo schermo,
  *   scorrendo a destra/sinistra (swipe) o toccando l'icona compatta a scomparsa.
  * - I ridisegni sono raggruppati (al massimo uno ogni [MIN_FRAME_INTERVAL_MS]) e Paint, colori e
  *   Path sono allocati una volta sola: nessuna allocazione nativa a ogni frame.
@@ -51,6 +52,7 @@ class CockpitSurfaceScreen(
         const val MODE_GAUGES_6 = 1
         const val MODE_CELLS_96 = 2
         const val MODE_COCKPIT_LIVE = 3
+        const val MODE_TRIP = 4
 
         /** Preferenze condivise con l'app telefono (interruttore del rendering GPU sperimentale) */
         const val PREFS_NAME = "niro_monitor"
@@ -103,7 +105,9 @@ class CockpitSurfaceScreen(
 
     private var currentMode: Int = initialMode
     private var latestState: NiroTelemetryState = TelemetryRepository.telemetry.value
+    private var latestTrips: TripLog = TelemetryRepository.trips.value
     private var collectJob: Job? = null
+    private var tripsJob: Job? = null
     private var tickerJob: Job? = null
 
     private var surfaceContainer: SurfaceContainer? = null
@@ -196,6 +200,7 @@ class CockpitSurfaceScreen(
             when (currentMode) {
                 MODE_GAUGES_6 -> MODE_CELLS_96
                 MODE_CELLS_96 -> MODE_COCKPIT_LIVE
+                MODE_COCKPIT_LIVE -> MODE_TRIP
                 else -> MODE_GAUGES_6
             }
         )
@@ -210,9 +215,10 @@ class CockpitSurfaceScreen(
         evResetConfirmDeadlineMs = 0L
         setMode(
             when (currentMode) {
-                MODE_GAUGES_6 -> MODE_COCKPIT_LIVE
+                MODE_GAUGES_6 -> MODE_TRIP
                 MODE_CELLS_96 -> MODE_GAUGES_6
-                else -> MODE_CELLS_96
+                MODE_COCKPIT_LIVE -> MODE_CELLS_96
+                else -> MODE_COCKPIT_LIVE
             }
         )
         scrollAccumX = 0f
@@ -313,6 +319,12 @@ class CockpitSurfaceScreen(
                         requestRender()
                     }
                 }
+                tripsJob = lifecycleScope.launch {
+                    TelemetryRepository.trips.collect { log ->
+                        latestTrips = log
+                        if (currentMode == MODE_TRIP) requestRender()
+                    }
+                }
 
                 // Ridisegna a tempo solo se c'è qualcosa che cambia senza nuovi dati (countdown, età dei dati)
                 tickerJob = lifecycleScope.launch {
@@ -325,6 +337,7 @@ class CockpitSurfaceScreen(
 
             override fun onStop(owner: LifecycleOwner) {
                 collectJob?.cancel()
+                tripsJob?.cancel()
                 tickerJob?.cancel()
                 mainHandler.removeCallbacks(renderRunnable)
                 mainHandler.removeCallbacks(retryRenderRunnable)
@@ -525,6 +538,9 @@ class CockpitSurfaceScreen(
         when (mode) {
             MODE_GAUGES_6 -> drawMode6Gauges(canvas, safeL, safeT, safeW, contentH, s)
             MODE_CELLS_96 -> drawMode96Cells(canvas, safeL, safeT, safeW, contentH, s)
+            MODE_TRIP -> drawModeTrip(
+                canvas, safeL, safeT, safeW, contentH, TripPageModel.of(latestTrips, System.currentTimeMillis())
+            )
             else -> drawModeCockpitLive(canvas, safeL, safeT, safeW, contentH, s)
         }
 
@@ -893,7 +909,7 @@ class CockpitSurfaceScreen(
     /**
      * Barra Footer Inferiore Unificata e Compatta:
      * Contiene il pallino di stato, il titolo app, la modalità di guida (EV Puro / Ibrido HEV),
-     * lo stato della connessione OBD, l'indicatore della pagina (1/3..3/3) e la firma "Made with ❤️ by Cristiano Casadei".
+     * lo stato della connessione OBD, l'indicatore della pagina (1/4..4/4) e la firma "Made with ❤️ by Cristiano Casadei".
      * Se i dati non sono live (mai ricevuti o fermi da oltre [STALE_DATA_MS]) lo segnala e spegne il pallino EV/HEV.
      */
     private fun drawBottomFooterBar(
@@ -927,9 +943,10 @@ class CockpitSurfaceScreen(
         canvas.drawCircle(dotCx, dotCy, dotRadius, fill(dotColor))
 
         val pageLabel = when (mode) {
-            MODE_GAUGES_6 -> "1/3 Gauge"
-            MODE_CELLS_96 -> "2/3 96 Celle"
-            else -> "3/3 Cockpit"
+            MODE_GAUGES_6 -> "1/4 Gauge"
+            MODE_CELLS_96 -> "2/4 96 Celle"
+            MODE_COCKPIT_LIVE -> "3/4 Cockpit"
+            else -> "4/4 Viaggio"
         }
         val driveMode = if (s.isEvMode) "EV PURO" else "IBRIDO HEV (${s.iceRpm} RPM)"
         val leftSummary = if (dataWarning != null) {
@@ -1253,6 +1270,176 @@ class CockpitSurfaceScreen(
             barRect.set(mx1, barTop, mx1 + (mx2 - mx1) * ratio, barBottom)
             canvas.drawRoundRect(barRect, barRadius, barRadius, fill(if (temp > 34) COLOR_AMBER else COLOR_GREEN))
         }
+    }
+
+    /**
+     * VISTA 4: Viaggio in corso (o ultimo concluso) con quattro card: distanza con ripartizione EV/termico,
+     * energia netta della batteria HV, benzina stimata e benzina risparmiata grazie all'EV.
+     */
+    private fun drawModeTrip(
+        canvas: Canvas,
+        left: Float,
+        top: Float,
+        width: Float,
+        height: Float,
+        m: TripPageModel
+    ) {
+        val headerH = height * 0.075f
+        val headerGap = height * 0.022f
+        val gapX = width * 0.009f
+        val gapY = height * 0.026f
+        val gridTop = top + headerH + headerGap
+        val cardW = (width - gapX) / 2f
+        val cardH = (height - headerH - headerGap - gapY) / 2f
+
+        // Intestazione: stato del viaggio, orari e durata a sinistra, SoC iniziale e finale a destra
+        val chipColor = when (m.status) {
+            TripPageModel.Status.IN_PROGRESS -> COLOR_GREEN
+            TripPageModel.Status.LAST -> COLOR_CARD_FOOTER
+            TripPageModel.Status.NONE -> COLOR_STALE
+        }
+        val headerCy = top + headerH / 2f
+        val headerText = headerH * 0.50f
+        val baseline = headerCy + headerText * 0.36f
+        val chipPadX = headerH * 0.40f
+        val dotR = headerH * 0.14f
+        val chipTextX = left + chipPadX + dotR * 2f + headerH * 0.24f
+        val chipTextW = text(chipColor, headerText * 0.92f, bold = true).measureText(m.chip)
+        shapeRect.set(left, top + headerH * 0.04f, chipTextX + chipTextW + chipPadX, top + headerH * 0.96f)
+        val chipRadius = shapeRect.height() / 2f
+        canvas.drawRoundRect(shapeRect, chipRadius, chipRadius, stroke(chipColor, max(1.5f, headerH * 0.055f)))
+        canvas.drawCircle(left + chipPadX + dotR, headerCy, dotR, fill(chipColor))
+        canvas.drawText(m.chip, chipTextX, baseline, text(chipColor, headerText * 0.92f, bold = true))
+
+        val socPaint = text(COLOR_CARD_FOOTER, headerText, bold = true, align = Paint.Align.RIGHT)
+        val socW = min(socPaint.measureText(m.soc), width * 0.30f)
+        drawAutoFitText(canvas, m.soc, left + width, baseline, width * 0.30f, socPaint)
+
+        val periodX = shapeRect.right + headerH * 0.45f
+        drawAutoFitText(
+            canvas, m.period, periodX, baseline, left + width - socW - headerH * 0.6f - periodX,
+            text(COLOR_FOOTER_TEXT, headerText, bold = true)
+        )
+
+        val hasData = m.status != TripPageModel.Status.NONE
+
+        // 1. Distanza con barra EV / termico
+        cardRect.set(left, gridTop, left + cardW, gridTop + cardH)
+        drawTripCard(canvas, cardRect, COLOR_GREEN, "DISTANZA", m.distance, "km", Color.WHITE)
+        if (hasData) {
+            val padX = cardH * 0.11f
+            val barTop = cardRect.top + cardH * 0.69f
+            val barH = cardH * 0.06f
+            barRect.set(cardRect.left + padX, barTop, cardRect.right - padX, barTop + barH)
+            canvas.drawRoundRect(barRect, barH / 2f, barH / 2f, fill(COLOR_BAR_TRACK))
+            val evRight = barRect.left + barRect.width() * m.evShare.coerceIn(0f, 1f)
+            canvas.save()
+            canvas.clipRect(barRect.left, barRect.top, evRight, barRect.bottom)
+            canvas.drawRoundRect(barRect, barH / 2f, barH / 2f, fill(COLOR_GREEN))
+            canvas.restore()
+            canvas.save()
+            canvas.clipRect(evRight, barRect.top, barRect.right, barRect.bottom)
+            canvas.drawRoundRect(barRect, barH / 2f, barH / 2f, fill(COLOR_AMBER))
+            canvas.restore()
+            drawTripDetail(canvas, cardRect, m.evKm, COLOR_GREEN, m.iceKm, COLOR_AMBER)
+        }
+
+        // 2. Energia netta della batteria HV
+        cardRect.set(left + cardW + gapX, gridTop, left + width, gridTop + cardH)
+        drawTripCard(canvas, cardRect, COLOR_BLUE, "BATTERIA HV", m.batteryNet, "kWh netti", Color.WHITE)
+        drawTripDetail(canvas, cardRect, m.batteryDetail, COLOR_CARD_FOOTER)
+
+        // 3. Benzina stimata dal MAF
+        val row2Top = gridTop + cardH + gapY
+        cardRect.set(left, row2Top, left + cardW, row2Top + cardH)
+        drawTripCard(canvas, cardRect, COLOR_AMBER, "BENZINA", m.fuel, "L", Color.WHITE)
+        drawTripDetail(canvas, cardRect, m.fuelDetail, COLOR_CARD_FOOTER)
+
+        // 4. Benzina risparmiata rispetto alla guida solo in ibrido
+        cardRect.set(left + cardW + gapX, row2Top, left + width, row2Top + cardH)
+        drawTripCard(
+            canvas, cardRect, COLOR_MINT, "RISPARMIATI CON L'EV", m.saved, "L",
+            if (hasData) COLOR_GREEN else Color.WHITE
+        )
+        drawTripDetail(canvas, cardRect, m.savedDetail, COLOR_CARD_FOOTER)
+    }
+
+    /** Card della pagina Viaggio: pallino colorato e titolo in alto, valore grande con unità al centro. */
+    private fun drawTripCard(
+        canvas: Canvas,
+        rect: RectF,
+        badgeColor: Int,
+        title: String,
+        value: String,
+        unit: String,
+        valueColor: Int
+    ) {
+        val w = rect.width()
+        val h = rect.height()
+        val corner = min(w, h) * 0.08f
+        canvas.drawRoundRect(rect, corner, corner, fill(COLOR_CARD))
+        canvas.drawRoundRect(rect, corner, corner, stroke(COLOR_CARD_BORDER, max(1.5f, h * 0.011f)))
+
+        val padX = h * 0.11f
+        val titleSize = h * 0.078f
+        val titleBaseline = rect.top + h * 0.20f
+        val badgeR = titleSize * 0.42f
+        canvas.drawCircle(rect.left + padX + badgeR, titleBaseline - titleSize * 0.36f, badgeR, fill(badgeColor))
+        drawAutoFitText(
+            canvas, title, rect.left + padX + badgeR * 2f + titleSize * 0.6f, titleBaseline,
+            w - padX * 2f - badgeR * 2f - titleSize * 0.6f, text(COLOR_MINT, titleSize, bold = true)
+        )
+
+        // Valore e unità ridotti insieme se non stanno nella larghezza della card
+        val gap = h * 0.04f
+        val valueW = text(valueColor, h * 0.27f, bold = true).measureText(value)
+        val unitW = text(COLOR_CARD_TITLE, h * 0.115f, bold = true).measureText(unit)
+        val available = w - padX * 2f
+        val total = valueW + gap + unitW
+        val scale = if (total > available && total > 0f) available / total else 1f
+        val valueBaseline = rect.top + h * 0.60f
+        val x = rect.left + padX
+        canvas.drawText(value, x, valueBaseline, text(valueColor, h * 0.27f * scale, bold = true))
+        canvas.drawText(
+            unit, x + (valueW + gap) * scale, valueBaseline,
+            text(COLOR_CARD_TITLE, h * 0.115f * scale, bold = true)
+        )
+    }
+
+    /**
+     * Riga di dettaglio in basso nella card: [first] e, se presente, [second] separati da un punto, ciascuno nel
+     * proprio colore; tutta la riga viene ridotta se non sta nella card.
+     */
+    private fun drawTripDetail(
+        canvas: Canvas,
+        rect: RectF,
+        first: String,
+        firstColor: Int,
+        second: String = "",
+        secondColor: Int = COLOR_CARD_FOOTER
+    ) {
+        if (first.isEmpty()) return
+        val h = rect.height()
+        val padX = h * 0.11f
+        val separator = if (second.isEmpty()) "" else "  •  "
+        val paint = text(firstColor, h * 0.088f)
+        val firstW = paint.measureText(first)
+        val sepW = paint.measureText(separator)
+        val secondW = paint.measureText(second)
+        val available = rect.width() - padX * 2f
+        val total = firstW + sepW + secondW
+        val scale = if (total > available && total > 0f) available / total else 1f
+        paint.textSize *= scale
+        val y = rect.top + h * 0.89f
+        var x = rect.left + padX
+        canvas.drawText(first, x, y, paint)
+        if (second.isEmpty()) return
+        x += firstW * scale
+        paint.color = COLOR_CARD_FOOTER
+        canvas.drawText(separator, x, y, paint)
+        x += sepW * scale
+        paint.color = secondColor
+        canvas.drawText(second, x, y, paint)
     }
 
     /**

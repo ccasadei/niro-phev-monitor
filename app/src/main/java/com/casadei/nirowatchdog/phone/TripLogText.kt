@@ -13,7 +13,9 @@ internal object TripLogText {
 
     private const val MAX_LISTED_TRIPS = 30
 
-    fun format(log: TripLog, nowMs: Long, zone: TimeZone = TimeZone.getDefault()): String {
+    fun format(rawLog: TripLog, nowMs: Long, zone: TimeZone = TimeZone.getDefault()): String {
+        // Un viaggio "in corso" fermo da oltre 5 minuti è concluso: Android ha chiuso l'app prima di archiviarlo
+        val log = rawLog.normalized(nowMs)
         val all = listOfNotNull(log.current) + log.completed
         if (all.isEmpty()) {
             return "Nessun viaggio registrato. Il registro si compila da solo quando Android Auto si collega " +
@@ -36,7 +38,7 @@ internal object TripLogText {
                 appendLine(
                     "▶ In corso dalle ${time.format(Date(cur.startMs))} — ${km(cur.distanceKm)} km " +
                         "(EV ${km(cur.evDistanceKm)}) • ${kwh(cur.netBatteryKwh.toDouble())} kWh netti • " +
-                        "${liters(cur.fuelLiters)} L"
+                        "${liters(cur.fuelLiters)} L • risparmiati ${liters(cur.savedFuelLiters)} L"
                 )
             }
 
@@ -51,14 +53,18 @@ internal object TripLogText {
                         " → ${kwh(t.netBatteryKwh.toDouble())} netti${per100(t.kwhPer100Km, "kWh")}" +
                         " • SoC ${pct(t.startSocPct)} → ${pct(t.endSocPct)}"
                 )
-                appendLine("   benzina: ${liters(t.fuelLiters)} L stimati${per100(t.litersPer100Km, "L")}")
+                appendLine(
+                    "   benzina: ${liters(t.fuelLiters)} L stimati${per100(t.litersPer100Km, "L")}" +
+                        " • risparmiati ${liters(t.savedFuelLiters)} L con l'EV"
+                )
             }
         }.trimEnd()
     }
 
     private fun totalsLine(t: TripTotals): String =
         "${km(t.distanceKm)} km (EV ${km(t.evDistanceKm)}) • batteria ${kwh(t.netBatteryKwh)} kWh netti" +
-            "${per100(t.kwhPer100Km, "kWh")} • benzina ${liters(t.fuelLiters)} L${per100(t.litersPer100Km, "L")}"
+            "${per100(t.kwhPer100Km, "kWh")} • benzina ${liters(t.fuelLiters)} L${per100(t.litersPer100Km, "L")}" +
+            " • risparmiati ${liters(t.savedFuelLiters)} L"
 
     private fun sameDay(aMs: Long, bMs: Long, zone: TimeZone): Boolean {
         val a = Calendar.getInstance(zone).apply { timeInMillis = aMs }

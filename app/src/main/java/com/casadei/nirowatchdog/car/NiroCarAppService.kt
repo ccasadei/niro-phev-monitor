@@ -5,6 +5,7 @@ import androidx.car.app.CarAppService
 import androidx.car.app.Screen
 import androidx.car.app.Session
 import androidx.car.app.validation.HostValidator
+import com.casadei.nirowatchdog.obd.EventLog
 import com.casadei.nirowatchdog.obd.TelemetryRepository
 
 /**
@@ -24,11 +25,14 @@ class NiroCarAppService : CarAppService() {
     override fun onCreate() {
         super.onCreate()
         TelemetryRepository.init(this)
+        EventLog.log("Android Auto collegato (servizio avviato)")
         TelemetryRepository.autoConnectFromCarSession(this)
     }
 
     override fun onDestroy() {
-        // Android Auto scollegato: il polling aperto dall'auto si ferma dopo un breve margine e il viaggio si chiude
+        // Android Auto scollegato: il viaggio viene salvato subito e il polling aperto dall'auto si ferma dopo un
+        // breve margine; il viaggio si chiude da solo se Android Auto non si ricollega entro 5 minuti
+        EventLog.log("Android Auto scollegato (servizio distrutto)")
         TelemetryRepository.onCarSessionEnded()
         super.onDestroy()
     }
@@ -40,6 +44,7 @@ class NiroCarSession : Session() {
     override fun onCreateScreen(intent: Intent): Screen {
         // Riapre il collegamento OBD (es. Android-Vlink) se non è attivo o era andato in pausa
         TelemetryRepository.init(carContext)
+        EventLog.log("Android Auto: schermata Niro Monitor aperta")
         TelemetryRepository.autoConnectFromCarSession(carContext)
         return CockpitSurfaceScreen(carContext)
     }

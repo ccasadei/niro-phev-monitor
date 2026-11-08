@@ -9,12 +9,13 @@ Telemetria **non ufficiale** per la **Kia Niro SG2 PHEV (2024)** su **Android Au
 
 ## Funzionalità
 
-* **Dashboard Android Auto a tutto schermo**, tre pagine che si cambiano con un tocco o uno swipe:
+* **Dashboard Android Auto a tutto schermo**, quattro pagine che si cambiano con un tocco o uno swipe:
   * **6 Gauge**: SoC della batteria HV con autonomia EV stimata, potenza HV, temperatura della batteria, motore 1.6 GDi, consumo e marcia, batteria 12V;
   * **96 Celle**: tensioni delle 96 celle (min/max, sbilanciamento, istogramma), stato di salute (SOH), temperature dei moduli, energia cumulativa;
-  * **Cockpit**: potenza istantanea con curva dell'ultimo minuto e temperature dei 4 moduli.
+  * **Cockpit**: potenza istantanea con curva dell'ultimo minuto e temperature dei 4 moduli;
+  * **Viaggio**: km percorsi (quanti in elettrico), kWh netti della batteria, benzina stimata e litri risparmiati grazie all'EV per il viaggio in corso o l'ultimo concluso.
 * **Avvio automatico**: il collegamento al dongle parte quando Android Auto si collega all'auto, anche senza aprire l'app sul display, e si ferma quando si scollega.
-* **Registro viaggi**: per ogni viaggio km (anche in EV puro), kWh erogati, recuperati e netti dalla batteria, benzina stimata, SoC iniziale e finale. Mostra il totale del giorno ed esporta in CSV.
+* **Registro viaggi**: per ogni viaggio km (anche in EV puro), kWh erogati, recuperati e netti dalla batteria, benzina stimata, litri risparmiati rispetto alla guida solo in ibrido (riferimento 5,0 L/100 km), SoC iniziale e finale. Una sosta di pochi minuti non spezza il viaggio. Mostra il totale del giorno ed esporta in CSV.
 * **Indicatore di dati non live**: il footer avvisa quando i valori non arrivano dall'auto o sono fermi da più di 5 secondi.
 * **Scanner UDS** per esplorare le centraline ed esportare le risposte grezze in JSON.
 * **Simulatore demo** per provare l'interfaccia senza auto né dongle.

@@ -118,11 +118,16 @@ object TelemetryRepository {
      * repository (Activity e servizio Android Auto lo fanno in onCreate). Le chiamate successive non fanno nulla.
      */
     fun init(context: Context) {
+        EventLog.init(context)
         if (tripRecorder != null) return
         synchronized(jobLock) {
             if (tripRecorder != null) return
             val file = File(context.applicationContext.filesDir, TRIPS_FILE_NAME)
-            val recorder = TripRecorder(FileTripStore(file), onChange = { _trips.value = it })
+            val recorder = TripRecorder(
+                FileTripStore(file),
+                onChange = { _trips.value = it },
+                onEvent = EventLog::log
+            )
             tripRecorder = recorder
             _trips.value = recorder.snapshot
         }
@@ -150,6 +155,7 @@ object TelemetryRepository {
             carStopJob = null
             if (liveOwner != null && activeJob?.isActive == true) {
                 // Un live avviato dal telefono passa all'auto: si fermerà con la fine della sessione Android Auto
+                if (liveOwner != LiveOwner.CAR) EventLog.log("Android Auto: polling già attivo, ora segue l'auto")
                 liveOwner = LiveOwner.CAR
                 return
             }
@@ -160,6 +166,7 @@ object TelemetryRepository {
                 Manifest.permission.BLUETOOTH_CONNECT
             ) == PackageManager.PERMISSION_GRANTED
             if (!hasPerm) {
+                EventLog.log("Android Auto: permesso Bluetooth mancante, polling non avviato")
                 setStatus("Permesso Bluetooth mancante: apri Niro Monitor sul telefono")
                 return
             }
@@ -175,18 +182,22 @@ object TelemetryRepository {
         if (obdDevice != null) {
             connectAndStartLiveObd(obdDevice, LiveOwner.CAR)
         } else {
+            EventLog.log("Android Auto: nessun dongle OBD associato, polling non avviato")
             setStatus("Nessun dongle OBD associato (Android-Vlink)")
         }
     }
 
     /**
-     * Da chiamare quando Android Auto si scollega (distruzione del servizio): se il polling live era stato
-     * aperto dall'auto lo ferma dopo [CAR_SESSION_STOP_GRACE_MS], così il telefono non continua a interrogare
-     * il dongle (e a consumare batteria) a vettura spenta. Lo stop chiude anche il viaggio in corso.
+     * Da chiamare quando Android Auto si scollega (distruzione del servizio): salva subito il viaggio in corso,
+     * perché poco dopo Android può congelare o chiudere l'app, e se il polling era stato aperto dall'auto lo
+     * ferma dopo [CAR_SESSION_STOP_GRACE_MS], così il telefono non interroga il dongle a vettura spenta.
+     * Il viaggio non viene chiuso: se Android Auto si ricollega entro 5 minuti prosegue lo stesso viaggio.
      */
     fun onCarSessionEnded() {
+        tripRecorder?.persist()
         synchronized(jobLock) {
             if (liveOwner != LiveOwner.CAR) return
+            EventLog.log("Android Auto scollegato: viaggio salvato, stop del polling tra ${CAR_SESSION_STOP_GRACE_MS / 1000} s")
             carStopJob?.cancel()
             carStopJob = scope.launch {
                 delay(CAR_SESSION_STOP_GRACE_MS)
@@ -199,6 +210,7 @@ object TelemetryRepository {
                     activeSocket.getAndSet(null)
                 }
                 socket?.closeQuietly()
+                EventLog.log("OBD: polling fermato (Android Auto scollegato)")
             }
         }
     }
@@ -217,6 +229,7 @@ object TelemetryRepository {
      * Avvia il simulatore realistico della Kia Niro SG2 PHEV 2024.
      */
     fun startDemoSimulator() {
+        EventLog.log("Simulatore demo avviato")
         launchExclusive(owner = null) {
             _telemetry.update {
                 it.copy(isDemoMode = true, connectionStatus = "Simulatore Demo SG2 PHEV")
@@ -272,6 +285,7 @@ object TelemetryRepository {
      * In caso di errore o disconnessione riprova da solo con attesa crescente (1 s → 30 s).
      */
     fun connectAndStartLiveObd(device: BluetoothDevice, owner: LiveOwner = LiveOwner.PHONE) {
+        EventLog.log("OBD: avvio polling verso ${safeName(device) ?: "dongle"} (${if (owner == LiveOwner.CAR) "Android Auto" else "telefono"})")
         launchExclusive(owner) {
             runLiveObdWithReconnect(device)
         }
@@ -285,6 +299,7 @@ object TelemetryRepository {
         device: BluetoothDevice,
         onComplete: (String) -> Unit
     ) {
+        EventLog.log("Scansione UDS avviata")
         launchExclusive(LiveOwner.PHONE) {
             val entries = mutableListOf<RawUdsDumpEntry>()
             val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
@@ -400,19 +415,21 @@ object TelemetryRepository {
     }
 
     private suspend fun runLiveObdWithReconnect(device: BluetoothDevice) {
+        // Quando il polling si ferma (pausa, Android Auto scollegato, demo, scansione) il viaggio viene solo
+        // salvato: si chiude da solo dopo una pausa senza dati, così una sosta breve non lo spezza in due
         try {
             reconnectLoop(device)
-            // Pausa dopo troppi tentativi: il viaggio resta aperto e si chiude da solo dopo una pausa senza dati
             tripRecorder?.persist()
         } catch (e: CancellationException) {
-            // Polling fermato di proposito (Android Auto scollegato, demo, scansione): il viaggio si chiude
-            tripRecorder?.finish()
+            tripRecorder?.persist()
+            EventLog.log("OBD: polling interrotto, viaggio salvato")
             throw e
         }
     }
 
     private suspend fun reconnectLoop(device: BluetoothDevice) {
         val name = safeName(device) ?: device.address
+        val logName = safeName(device) ?: "dongle"
         val myJob = currentCoroutineContext()[Job]
         var backoffMs = RECONNECT_BACKOFF_START_MS
         var failedAttempts = 0
@@ -421,6 +438,7 @@ object TelemetryRepository {
             try {
                 withElmLink(device) { link ->
                     setStatus("OBD: $name")
+                    EventLog.log("OBD: connesso a $logName")
                     pollLiveData(link, name) {
                         backoffMs = RECONNECT_BACKOFF_START_MS
                         failedAttempts = 0
@@ -432,6 +450,7 @@ object TelemetryRepository {
                 // Un IOException causato dalla chiusura del socket durante una cancellazione non deve sovrascrivere lo stato
                 currentCoroutineContext().ensureActive()
                 failedAttempts++
+                EventLog.log("OBD: ${e.localizedMessage ?: "disconnesso"} (tentativo $failedAttempts)")
                 // Il live non insiste all'infinito (auto spenta, dongle scollegato o fuori portata): quello del
                 // telefono si ferma prima, quello di Android Auto concede più tentativi
                 synchronized(jobLock) {
@@ -441,6 +460,7 @@ object TelemetryRepository {
                         liveOwner = null
                         val hint = if (owner == LiveOwner.CAR) "riapri Niro Monitor sull'auto per riprovare" else "premi Avvia per riprovare"
                         setStatus("OBD in pausa ($name): nessun dato dopo $failedAttempts tentativi • $hint")
+                        EventLog.log("OBD: in pausa dopo $failedAttempts tentativi senza dati")
                         return
                     }
                 }

@@ -2,6 +2,7 @@ package com.casadei.nirowatchdog.phone
 
 import com.casadei.nirowatchdog.obd.TripLog
 import com.casadei.nirowatchdog.obd.TripRecord
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.TimeZone
@@ -39,10 +40,20 @@ class TripLogTextTest {
         val text = TripLogText.format(TripLog(completed = listOf(trip)), morning + 8 * 3_600_000L, utc)
 
         assertTrue(text, text.startsWith("OGGI: 274,0 km (EV 120,4) • batteria 18,4 kWh netti (6,7 kWh/100 km)"))
-        assertTrue(text, text.contains("benzina 9,80 L (3,6 L/100 km)"))
+        // 274 km a 5,0 L/100 km = 13,70 L in ibrido, meno 9,80 L usati
+        assertTrue(text, text.contains("benzina 9,80 L (3,6 L/100 km) • risparmiati 3,90 L"))
         assertTrue(text, text.contains("01/11 07:49–14:30 (6 h 41 min) — 274,0 km (EV 120,4)"))
         assertTrue(text, text.contains("erogati 25,1 kWh, rientrati 6,7 → 18,4 netti"))
         assertTrue(text, text.contains("SoC 85,5% → 16,0%"))
+        assertTrue(text, text.contains("benzina: 9,80 L stimati (3,6 L/100 km) • risparmiati 3,90 L con l'EV"))
+    }
+
+    @Test
+    fun staleTripInProgress_isListedAsConcluded() {
+        // Android ha chiuso l'app prima che archiviasse il viaggio: dopo 5 minuti senza dati non è più "in corso"
+        val text = TripLogText.format(TripLog(current = trip), trip.endMs + 10 * 60_000L, utc)
+        assertFalse(text, text.contains("In corso"))
+        assertTrue(text, text.contains("01/11 07:49–14:30"))
     }
 
     @Test

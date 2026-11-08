@@ -133,18 +133,89 @@ class TripRecorderTest {
     }
 
     @Test
-    fun finish_archivesMeaningfulTripAndDropsTrivialOne() {
+    fun persistAndShortStop_keepTheSameTrip() {
         val store = MemoryStore()
         val r = recorder(store)
         r.drive(36) { state(speed = 100) }
-        r.finish()
-        assertNull(store.log.current)
-        assertEquals(1, store.log.completed.size)
+        val start = r.snapshot.current!!.startMs
 
-        // Quadro acceso da fermo, nessun consumo: non viene archiviato
+        // Polling fermato (Android Auto scollegato): il viaggio viene solo salvato, non chiuso
+        r.persist()
+        assertEquals(start, store.log.current!!.startMs)
+        assertTrue(store.log.completed.isEmpty())
+
+        // Sosta di 3 minuti e ripartenza: stesso viaggio, senza integrare la pausa
+        now += 3 * 60_000L
+        r.onSample(state(speed = 50), null)
+        assertEquals(start, r.snapshot.current!!.startMs)
+        assertTrue(r.snapshot.completed.isEmpty())
+        assertEquals(1.0, r.snapshot.current!!.speedDistanceKm, 1e-9)
+    }
+
+    @Test
+    fun events_atTripStartAndClose() {
+        val events = mutableListOf<String>()
+        val r = TripRecorder(MemoryStore(), clock = { now }, onEvent = { events += it })
+        r.drive(36) { state(speed = 100, soc = 55f) }
+        now += TripRecorder.TRIP_GAP_MS + 1
+        r.onSample(state(speed = 0), null)
+
+        assertEquals("Viaggio iniziato (SoC 55,0 %)", events[0])
+        assertEquals("Viaggio chiuso: 1,0 km (EV 1,0), 0,0 kWh netti, 0,00 L", events[1])
+        assertEquals(3, events.size) // e subito dopo inizia il viaggio successivo
+    }
+
+    @Test
+    fun normalized_movesStaleCurrentTripToCompleted() {
+        val trip = TripRecord(
+            startMs = now - 3_600_000L, endMs = now - 60_000L, speedDistanceKm = 20.0,
+            startSocPct = 80f, endSocPct = 60f, startDischargedKwh = 1000f, endDischargedKwh = 1003f,
+            startChargedKwh = 900f, endChargedKwh = 900.5f
+        )
+        val log = TripLog(current = trip)
+
+        assertEquals(log, log.normalized(now)) // fermo da 1 minuto: ancora in corso
+
+        val later = now + TripRecorder.TRIP_GAP_MS
+        assertEquals(TripLog(completed = listOf(trip)), log.normalized(later))
+
+        // Un viaggio senza movimento né consumi sparisce invece di finire tra i conclusi
+        val trivial = TripLog(current = trip.copy(speedDistanceKm = 0.0, endDischargedKwh = 1000f))
+        assertEquals(TripLog(), trivial.normalized(later))
+    }
+
+    @Test
+    fun fuelSavings_comparedToHybridReference() {
+        val trip = TripRecord(
+            startMs = 0L, endMs = 1L, speedDistanceKm = 36.0, evDistanceKm = 29.8,
+            startSocPct = 55f, endSocPct = 16.5f, startDischargedKwh = 1000f, endDischargedKwh = 1005.4f,
+            startChargedKwh = 900f, endChargedKwh = 901.1f, fuelLiters = 0.5
+        )
+        assertEquals(1.8, trip.hybridReferenceLiters, 1e-9) // 36 km a 5,0 L/100 km
+        assertEquals(1.3, trip.savedFuelLiters, 1e-9)
+
+        // Più benzina del riferimento (es. motore freddo, autostrada): nessun risparmio, mai negativo
+        assertEquals(0.0, trip.copy(fuelLiters = 2.5).savedFuelLiters, 1e-9)
+
+        val totals = TripTotals.of(listOf(trip, trip))
+        assertEquals(2.6, totals.savedFuelLiters, 1e-9)
+    }
+
+    @Test
+    fun closedTrip_isArchivedOnlyIfMeaningful() {
+        val store = MemoryStore()
+        val r = recorder(store)
+        r.drive(36) { state(speed = 100) }
+
+        // Quadro acceso da fermo dopo la pausa: chiude il primo viaggio, salvato subito
         now += TripRecorder.TRIP_GAP_MS + 1
         r.drive(10) { state(speed = 0) }
-        r.finish()
+        assertEquals(1, store.log.completed.size)
+        assertNotNull(r.snapshot.current)
+
+        // Il viaggio da fermo, senza consumi, alla chiusura non viene archiviato
+        now += TripRecorder.TRIP_GAP_MS + 1
+        r.onSample(state(speed = 0), null)
         assertEquals(1, store.log.completed.size)
     }
 
@@ -233,5 +304,6 @@ class TripRecorderTest {
         assertEquals("8,0", cols[8])
         assertEquals("3,50", cols[9])
         assertEquals("3,5", cols[10])
+        assertEquals("1,50", cols[15]) // 100 km a 5,0 L/100 km = 5,00 L, meno 3,50 L usati
     }
 }

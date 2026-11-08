@@ -7,14 +7,15 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Un viaggio registrato: dai primi dati BMS validi fino alla fine della sessione Android Auto o a una
- * pausa senza dati più lunga di [TripRecorder.TRIP_GAP_MS].
+ * Un viaggio registrato: dai primi dati BMS validi fino a una pausa senza dati più lunga di
+ * [TripLog.TRIP_GAP_MS] (lo scollegamento di Android Auto da solo non lo chiude).
  *
  * - Distanza: dall'odometro del cruscotto (risoluzione 1 km) se letto a inizio e fine e il viaggio è di
  *   almeno [MIN_ODOMETER_TRIP_KM], altrimenti integrando la velocità.
  * - Energia: differenza dei contatori cumulativi del BMS (risoluzione 0,1 kWh). "Erogata" è l'energia
  *   uscita dalla batteria HV, "rientrata" quella recuperata in frenata o caricata dal motore termico.
  * - Benzina: stima integrando nel tempo il consumo istantaneo calcolato dal MAF (L/h).
+ * - Benzina risparmiata: vedi [FuelSavings].
  */
 data class TripRecord(
     val startMs: Long,
@@ -53,7 +54,7 @@ data class TripRecord(
 
         private const val CSV_HEADER =
             "inizio;fine;durata_min;km;km_ev;kwh_erogati;kwh_rientrati;kwh_netti;kwh_100km;" +
-                "benzina_litri;litri_100km;soc_inizio;soc_fine;odometro_inizio;odometro_fine"
+                "benzina_litri;litri_100km;soc_inizio;soc_fine;odometro_inizio;odometro_fine;benzina_risparmiata_litri"
 
         /** Esportazione CSV per fogli di calcolo italiani: separatore ';' e virgola decimale. */
         fun toCsv(trips: List<TripRecord>): String = buildString {
@@ -76,7 +77,8 @@ data class TripRecord(
                         "%.1f".format(Locale.ITALY, t.startSocPct),
                         "%.1f".format(Locale.ITALY, t.endSocPct),
                         t.startOdometerKm?.toString() ?: "",
-                        t.endOdometerKm?.toString() ?: ""
+                        t.endOdometerKm?.toString() ?: "",
+                        "%.2f".format(Locale.ITALY, t.savedFuelLiters)
                     ).joinToString(";")
                 )
             }
@@ -110,6 +112,18 @@ data class TripRecord(
     val litersPer100Km: Double?
         get() = if (distanceKm >= 1.0) fuelLiters * 100.0 / distanceKm else null
 
+    /** Benzina che sarebbe servita per gli stessi km guidando solo in ibrido */
+    val hybridReferenceLiters: Double
+        get() = FuelSavings.hybridLiters(distanceKm)
+
+    /** Benzina risparmiata grazie alla batteria (stima, mai negativa) */
+    val savedFuelLiters: Double
+        get() = FuelSavings.savedLiters(distanceKm, fuelLiters)
+
+    /** false per i viaggi senza movimento né consumi apprezzabili (es. quadro acceso da fermo): non si archiviano */
+    val isMeaningful: Boolean
+        get() = distanceKm >= 0.3 || batteryOutKwh >= 0.2f || fuelLiters >= 0.05
+
     fun toJson(): JSONObject = JSONObject().apply {
         put("startMs", startMs)
         put("endMs", endMs)
@@ -138,7 +152,20 @@ data class TripLog(
         current?.let { put("current", it.toJson()) }
     }
 
+    /**
+     * Il registro come va mostrato all'istante [nowMs]: un viaggio "in corso" senza campioni da più di
+     * [TRIP_GAP_MS] è in realtà concluso (Android ha chiuso l'app prima che lo archiviasse) e va tra i conclusi.
+     */
+    fun normalized(nowMs: Long): TripLog {
+        val cur = current ?: return this
+        if (nowMs - cur.endMs <= TRIP_GAP_MS) return this
+        return TripLog(completed = if (cur.isMeaningful) listOf(cur) + completed else completed, current = null)
+    }
+
     companion object {
+        /** Pausa senza dati oltre la quale un viaggio si considera concluso (sosta a motore spento) */
+        const val TRIP_GAP_MS = 5 * 60_000L
+
         fun fromJson(o: JSONObject): TripLog {
             val arr = o.optJSONArray("completed") ?: JSONArray()
             return TripLog(
@@ -166,6 +193,12 @@ data class TripTotals(
     val litersPer100Km: Double?
         get() = if (distanceKm >= 1.0) fuelLiters * 100.0 / distanceKm else null
 
+    val hybridReferenceLiters: Double
+        get() = FuelSavings.hybridLiters(distanceKm)
+
+    val savedFuelLiters: Double
+        get() = FuelSavings.savedLiters(distanceKm, fuelLiters)
+
     companion object {
         fun of(trips: List<TripRecord>) = TripTotals(
             distanceKm = trips.sumOf { it.distanceKm },
@@ -175,4 +208,19 @@ data class TripTotals(
             fuelLiters = trips.sumOf { it.fuelLiters }
         )
     }
+}
+
+/**
+ * Stima della benzina risparmiata guidando con la batteria: la benzina che sarebbe servita per gli stessi km in
+ * ibrido con la batteria in riserva ([HYBRID_REFERENCE_L_PER_100KM]) meno quella stimata dal MAF. È una stima:
+ * entrambi i termini sono approssimati e il consumo in ibrido dipende da percorso, velocità e temperatura.
+ */
+object FuelSavings {
+    /** Consumo indicativo della Niro SG2 PHEV in ibrido con la batteria in riserva (L/100 km) */
+    const val HYBRID_REFERENCE_L_PER_100KM = 5.0
+
+    fun hybridLiters(distanceKm: Double): Double = distanceKm.coerceAtLeast(0.0) * HYBRID_REFERENCE_L_PER_100KM / 100.0
+
+    fun savedLiters(distanceKm: Double, fuelLiters: Double): Double =
+        (hybridLiters(distanceKm) - fuelLiters).coerceAtLeast(0.0)
 }

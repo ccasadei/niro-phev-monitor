@@ -2,7 +2,7 @@ package com.casadei.nirowatchdog.obd
 
 import org.json.JSONObject
 import java.io.File
-import kotlin.math.abs
+import java.util.Locale
 
 /** Persistenza del registro viaggi; interfaccia separata per poter testare [TripRecorder] senza file. */
 internal interface TripStore {
@@ -37,10 +37,12 @@ internal class FileTripStore(private val file: File) : TripStore {
 /**
  * Costruisce il registro viaggi dai campioni del polling live (uno per ciclo con risposta BMS valida).
  *
- * - Un viaggio si apre al primo campione e si chiude con [finish] (fine sessione Android Auto o stop del
- *   polling) oppure quando tra due campioni passano più di [TRIP_GAP_MS].
- * - Il viaggio in corso viene salvato ogni [SAVE_INTERVAL_MS]: se Android chiude il processo, al riavvio
- *   viene ripreso (pausa breve) oppure archiviato.
+ * - Un viaggio si apre al primo campione e si chiude quando tra due campioni passano più di [TRIP_GAP_MS]:
+ *   una sosta breve (Android Auto che si scollega e ricollega, dongle che si riconnette) non lo spezza.
+ *   [closeNow] lo chiude subito. I viaggi senza movimento né consumi ([TripRecord.isMeaningful]) non vengono
+ *   archiviati.
+ * - Il viaggio in corso viene salvato ogni [SAVE_INTERVAL_MS] e con [persist] quando il polling si ferma:
+ *   se Android chiude il processo, al riavvio viene ripreso (pausa breve) oppure archiviato.
  *
  * Thread-safe: i metodi sono sincronizzati, perché il polling gira su un thread IO e azzeramento e lettura
  * arrivano dall'interfaccia.
@@ -48,19 +50,16 @@ internal class FileTripStore(private val file: File) : TripStore {
 internal class TripRecorder(
     private val store: TripStore,
     private val clock: () -> Long = System::currentTimeMillis,
-    private val onChange: (TripLog) -> Unit = {}
+    private val onChange: (TripLog) -> Unit = {},
+    /** Riceve un messaggio all'inizio e alla chiusura di ogni viaggio (log eventi) */
+    private val onEvent: (String) -> Unit = {}
 ) {
     companion object {
-        /** Pausa senza dati oltre la quale il viaggio in corso si chiude (es. sosta a motore spento) */
-        const val TRIP_GAP_MS = 5 * 60_000L
+        const val TRIP_GAP_MS = TripLog.TRIP_GAP_MS
         /** Oltre questo intervallo tra due campioni non si integra (dati mancanti, es. riconnessione al dongle) */
         const val MAX_INTEGRATION_STEP_MS = 5_000L
         const val SAVE_INTERVAL_MS = 30_000L
         const val MAX_STORED_TRIPS = 500
-        /** Viaggi senza movimento né consumi apprezzabili (es. quadro acceso da fermo) non vengono archiviati */
-        const val MIN_SAVED_DISTANCE_KM = 0.3
-        const val MIN_SAVED_ENERGY_KWH = 0.2f
-        const val MIN_SAVED_FUEL_LITERS = 0.05
     }
 
     private var log: TripLog
@@ -93,6 +92,7 @@ internal class TripRecorder(
         }
 
         cur = if (cur == null) {
+            onEvent(String.format(Locale.ITALY, "Viaggio iniziato (SoC %.1f %%)", s.socBms))
             TripRecord(
                 startMs = now,
                 endMs = now,
@@ -140,10 +140,15 @@ internal class TripRecorder(
         onChange(log)
     }
 
-    /** Chiude e archivia il viaggio in corso. */
+    /**
+     * Chiude subito il viaggio in corso (azzeramento dalla pagina Viaggio): viene archiviato come gli altri e il
+     * prossimo campione ne apre uno nuovo da zero.
+     */
     @Synchronized
-    fun finish() {
-        if (log.current != null) closeCurrent()
+    fun closeNow() {
+        if (log.current == null) return
+        onEvent("Viaggio chiuso a mano dalla pagina Viaggio")
+        closeCurrent()
     }
 
     /** Salva subito il viaggio in corso (es. quando il polling si interrompe senza chiuderlo). */
@@ -167,12 +172,19 @@ internal class TripRecorder(
 
     private fun closeCurrent() {
         val cur = log.current ?: return
-        val meaningful = cur.distanceKm >= MIN_SAVED_DISTANCE_KM ||
-            abs(cur.batteryOutKwh) >= MIN_SAVED_ENERGY_KWH ||
-            cur.fuelLiters >= MIN_SAVED_FUEL_LITERS
-        val completed = if (meaningful) (listOf(cur) + log.completed).take(MAX_STORED_TRIPS) else log.completed
+        val completed = if (cur.isMeaningful) (listOf(cur) + log.completed).take(MAX_STORED_TRIPS) else log.completed
         log = TripLog(completed = completed, current = null)
         persist()
+        onEvent(
+            if (cur.isMeaningful) {
+                String.format(
+                    Locale.ITALY, "Viaggio chiuso: %.1f km (EV %.1f), %.1f kWh netti, %.2f L",
+                    cur.distanceKm, cur.evDistanceKm, cur.netBatteryKwh, cur.fuelLiters
+                )
+            } else {
+                "Viaggio scartato: nessun movimento né consumo"
+            }
+        )
         onChange(log)
     }
 }

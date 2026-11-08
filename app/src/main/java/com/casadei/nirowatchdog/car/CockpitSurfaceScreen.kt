@@ -145,6 +145,11 @@ class CockpitSurfaceScreen(
     private var evResetConfirmDeadlineMs = 0L
     private var evResetDoneBannerUntilMs = 0L
 
+    // Area touch (intestazione) e stato di conferma per chiudere il viaggio in corso nella pagina Viaggio
+    private val tripResetHitRect = RectF()
+    private var tripResetConfirmDeadlineMs = 0L
+    private var tripResetDoneBannerUntilMs = 0L
+
     // Oggetti di disegno riutilizzati a ogni frame (configurati subito prima di ogni draw)
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
@@ -196,6 +201,7 @@ class CockpitSurfaceScreen(
         if (now - lastPageSwitchMs < 300L) return
         lastPageSwitchMs = now
         evResetConfirmDeadlineMs = 0L
+        tripResetConfirmDeadlineMs = 0L
         setMode(
             when (currentMode) {
                 MODE_GAUGES_6 -> MODE_CELLS_96
@@ -213,6 +219,7 @@ class CockpitSurfaceScreen(
         if (now - lastPageSwitchMs < 300L) return
         lastPageSwitchMs = now
         evResetConfirmDeadlineMs = 0L
+        tripResetConfirmDeadlineMs = 0L
         setMode(
             when (currentMode) {
                 MODE_GAUGES_6 -> MODE_TRIP
@@ -270,6 +277,28 @@ class CockpitSurfaceScreen(
                 }
                 requestRender()
                 return
+            }
+
+            // Nella vista Viaggio, toccando l'intestazione si chiude il viaggio in corso (con conferma)
+            if (currentMode == MODE_TRIP && tripResetHitRect.contains(x, y)) {
+                when {
+                    now < tripResetConfirmDeadlineMs -> {
+                        // Secondo tocco entro 5 secondi: chiude il viaggio, il prossimo parte da zero
+                        TelemetryRepository.closeCurrentTrip()
+                        tripResetConfirmDeadlineMs = 0L
+                        tripResetDoneBannerUntilMs = now + 2600L
+                        requestRender()
+                        return
+                    }
+                    now < tripResetDoneBannerUntilMs -> return
+                    latestTrips.normalized(now).current != null -> {
+                        // Primo tocco: chiede conferma per 5 secondi
+                        tripResetConfirmDeadlineMs = now + 5000L
+                        requestRender()
+                        return
+                    }
+                }
+                // Nessun viaggio in corso da chiudere: il tocco cambia pagina come altrove
             }
 
             // Toccando altrove ruota in circolo alla pagina successiva
@@ -395,6 +424,7 @@ class CockpitSurfaceScreen(
         val now = System.currentTimeMillis()
         // Countdown di conferma azzeramento e banner "azzerato" (+1 s per cancellarli alla scadenza)
         if (now < evResetConfirmDeadlineMs + 1000L || now < evResetDoneBannerUntilMs + 1000L) return true
+        if (now < tripResetConfirmDeadlineMs + 1000L || now < tripResetDoneBannerUntilMs + 1000L) return true
         // Età dei dati nel footer quando il BMS non aggiorna più
         val s = latestState
         return !s.isDemoMode && s.lastLiveDataMs > 0L && now - s.lastLiveDataMs > STALE_DATA_MS
@@ -1292,11 +1322,22 @@ class CockpitSurfaceScreen(
         val cardW = (width - gapX) / 2f
         val cardH = (height - headerH - headerGap - gapY) / 2f
 
-        // Intestazione: stato del viaggio, orari e durata a sinistra, SoC iniziale e finale a destra
-        val chipColor = when (m.status) {
-            TripPageModel.Status.IN_PROGRESS -> COLOR_GREEN
-            TripPageModel.Status.LAST -> COLOR_CARD_FOOTER
-            TripPageModel.Status.NONE -> COLOR_STALE
+        // Intestazione: stato del viaggio, orari e durata a sinistra, SoC iniziale e finale a destra.
+        // Con un viaggio in corso, due tocchi sull'intestazione lo chiudono e il successivo riparte da zero.
+        val now = System.currentTimeMillis()
+        val confirming = now < tripResetConfirmDeadlineMs
+        val justReset = now < tripResetDoneBannerUntilMs
+        val inProgress = m.status == TripPageModel.Status.IN_PROGRESS
+        val chip = when {
+            confirming -> "CONFERMI?"
+            justReset -> "AZZERATO"
+            else -> m.chip
+        }
+        val chipColor = when {
+            confirming -> COLOR_AMBER
+            justReset || inProgress -> COLOR_GREEN
+            m.status == TripPageModel.Status.LAST -> COLOR_CARD_FOOTER
+            else -> COLOR_STALE
         }
         val headerCy = top + headerH / 2f
         val headerText = headerH * 0.50f
@@ -1304,22 +1345,54 @@ class CockpitSurfaceScreen(
         val chipPadX = headerH * 0.40f
         val dotR = headerH * 0.14f
         val chipTextX = left + chipPadX + dotR * 2f + headerH * 0.24f
-        val chipTextW = text(chipColor, headerText * 0.92f, bold = true).measureText(m.chip)
+        val chipTextW = text(chipColor, headerText * 0.92f, bold = true).measureText(chip)
         shapeRect.set(left, top + headerH * 0.04f, chipTextX + chipTextW + chipPadX, top + headerH * 0.96f)
         val chipRadius = shapeRect.height() / 2f
         canvas.drawRoundRect(shapeRect, chipRadius, chipRadius, stroke(chipColor, max(1.5f, headerH * 0.055f)))
         canvas.drawCircle(left + chipPadX + dotR, headerCy, dotR, fill(chipColor))
-        canvas.drawText(m.chip, chipTextX, baseline, text(chipColor, headerText * 0.92f, bold = true))
+        canvas.drawText(chip, chipTextX, baseline, text(chipColor, headerText * 0.92f, bold = true))
 
         val socPaint = text(COLOR_CARD_FOOTER, headerText, bold = true, align = Paint.Align.RIGHT)
         val socW = min(socPaint.measureText(m.soc), width * 0.30f)
         drawAutoFitText(canvas, m.soc, left + width, baseline, width * 0.30f, socPaint)
 
         val periodX = shapeRect.right + headerH * 0.45f
-        drawAutoFitText(
-            canvas, m.period, periodX, baseline, left + width - socW - headerH * 0.6f - periodX,
-            text(COLOR_FOOTER_TEXT, headerText, bold = true)
-        )
+        val periodMaxW = left + width - socW - headerH * 0.6f - periodX
+        when {
+            confirming -> {
+                val secLeft = ((tripResetConfirmDeadlineMs - now) / 1000L + 1L).coerceIn(1L, 5L)
+                drawAutoFitText(
+                    canvas, "Tocca di nuovo qui entro $secLeft s per chiudere il viaggio e ripartire da zero",
+                    periodX, baseline, periodMaxW, text(COLOR_AMBER, headerText, bold = true)
+                )
+            }
+            justReset -> drawAutoFitText(
+                canvas, "Viaggio chiuso e salvato nel registro: il nuovo parte da zero",
+                periodX, baseline, periodMaxW, text(COLOR_GREEN, headerText, bold = true)
+            )
+            inProgress -> {
+                // Orari in chiaro e, più tenue, il suggerimento per azzerare; ridotti insieme se non c'è spazio
+                val hint = "   ↻ tocca qui per azzerare"
+                val paint = text(COLOR_FOOTER_TEXT, headerText, bold = true)
+                val periodW = paint.measureText(m.period)
+                val total = periodW + paint.measureText(hint)
+                val scale = if (total > periodMaxW && total > 0f) periodMaxW / total else 1f
+                paint.textSize *= scale
+                canvas.drawText(m.period, periodX, baseline, paint)
+                paint.color = COLOR_STALE
+                canvas.drawText(hint, periodX + periodW * scale, baseline, paint)
+            }
+            else -> drawAutoFitText(
+                canvas, m.period, periodX, baseline, periodMaxW, text(COLOR_FOOTER_TEXT, headerText, bold = true)
+            )
+        }
+
+        // Area del tocco di azzeramento: l'intestazione allargata in altezza (~48 dp) per centrarla con il dito
+        if (inProgress || confirming || justReset) {
+            tripResetHitRect.set(left, top - headerH * 0.4f, left + width, gridTop + headerGap * 0.5f)
+        } else {
+            tripResetHitRect.setEmpty()
+        }
 
         val hasData = m.status != TripPageModel.Status.NONE
 

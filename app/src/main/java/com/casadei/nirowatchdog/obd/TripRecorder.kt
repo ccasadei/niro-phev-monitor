@@ -39,7 +39,8 @@ internal class FileTripStore(private val file: File) : TripStore {
  *
  * - Un viaggio si apre al primo campione e si chiude quando tra due campioni passano più di [TRIP_GAP_MS]:
  *   una sosta breve (Android Auto che si scollega e ricollega, dongle che si riconnette) non lo spezza.
- *   I viaggi senza movimento né consumi ([TripRecord.isMeaningful]) non vengono archiviati.
+ *   [closeNow] lo chiude subito. I viaggi senza movimento né consumi ([TripRecord.isMeaningful]) non vengono
+ *   archiviati.
  * - Il viaggio in corso viene salvato ogni [SAVE_INTERVAL_MS] e con [persist] quando il polling si ferma:
  *   se Android chiude il processo, al riavvio viene ripreso (pausa breve) oppure archiviato.
  *
@@ -137,6 +138,17 @@ internal class TripRecorder(
             persist()
         }
         onChange(log)
+    }
+
+    /**
+     * Chiude subito il viaggio in corso (azzeramento dalla pagina Viaggio): viene archiviato come gli altri e il
+     * prossimo campione ne apre uno nuovo da zero.
+     */
+    @Synchronized
+    fun closeNow() {
+        if (log.current == null) return
+        onEvent("Viaggio chiuso a mano dalla pagina Viaggio")
+        closeCurrent()
     }
 
     /** Salva subito il viaggio in corso (es. quando il polling si interrompe senza chiuderlo). */

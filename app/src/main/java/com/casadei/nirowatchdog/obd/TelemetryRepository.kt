@@ -137,6 +137,11 @@ object TelemetryRepository {
         tripRecorder?.clear()
     }
 
+    /** Chiude e archivia il viaggio in corso: dal prossimo ciclo di polling ne parte uno nuovo da zero. */
+    fun closeCurrentTrip() {
+        tripRecorder?.closeNow()
+    }
+
     /** Viaggi (compreso quello in corso) in CSV con separatore ';' e virgola decimale. */
     fun exportTripsCsv(): String {
         val log = _trips.value

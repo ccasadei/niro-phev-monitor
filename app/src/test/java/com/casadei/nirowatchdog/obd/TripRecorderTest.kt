@@ -153,6 +153,29 @@ class TripRecorderTest {
     }
 
     @Test
+    fun closeNow_archivesTripAndNextSampleStartsFromZero() {
+        val store = MemoryStore()
+        val events = mutableListOf<String>()
+        val r = TripRecorder(store, clock = { now }, onEvent = { events += it })
+        r.closeNow() // nessun viaggio: niente da fare
+        assertTrue(events.isEmpty())
+
+        r.drive(36) { state(speed = 100, discharged = 1000f) }
+        r.closeNow()
+        assertNull(r.snapshot.current)
+        assertEquals(1, store.log.completed.size)
+        assertEquals(1.0, store.log.completed[0].speedDistanceKm, 1e-9)
+        assertEquals("Viaggio chiuso a mano dalla pagina Viaggio", events[1])
+
+        // Un secondo dopo il polling prosegue: nuovo viaggio da zero
+        now += 1000
+        r.onSample(state(speed = 100, discharged = 1000f), null)
+        val fresh = r.snapshot.current!!
+        assertEquals(now, fresh.startMs)
+        assertEquals(0.0, fresh.speedDistanceKm, 1e-9)
+    }
+
+    @Test
     fun events_atTripStartAndClose() {
         val events = mutableListOf<String>()
         val r = TripRecorder(MemoryStore(), clock = { now }, onEvent = { events += it })

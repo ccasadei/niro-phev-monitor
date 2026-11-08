@@ -1405,13 +1405,16 @@ class CockpitSurfaceScreen(
             val barH = cardH * 0.06f
             barRect.set(cardRect.left + padX, barTop, cardRect.right - padX, barTop + barH)
             canvas.drawRoundRect(barRect, barH / 2f, barH / 2f, fill(COLOR_BAR_TRACK))
-            val evRight = barRect.left + barRect.width() * m.evShare.coerceIn(0f, 1f)
+            // Verde per i km in EV, ambra per quelli con il termico; a viaggio appena partito resta il binario vuoto
+            val evShare = m.evShare.coerceIn(0f, 1f)
+            val evRight = barRect.left + barRect.width() * evShare
+            val iceRight = evRight + barRect.width() * m.iceShare.coerceIn(0f, 1f - evShare)
             canvas.save()
             canvas.clipRect(barRect.left, barRect.top, evRight, barRect.bottom)
             canvas.drawRoundRect(barRect, barH / 2f, barH / 2f, fill(COLOR_GREEN))
             canvas.restore()
             canvas.save()
-            canvas.clipRect(evRight, barRect.top, barRect.right, barRect.bottom)
+            canvas.clipRect(evRight, barRect.top, iceRight, barRect.bottom)
             canvas.drawRoundRect(barRect, barH / 2f, barH / 2f, fill(COLOR_AMBER))
             canvas.restore()
             drawTripDetail(canvas, cardRect, m.evKm, COLOR_GREEN, m.iceKm, COLOR_AMBER)

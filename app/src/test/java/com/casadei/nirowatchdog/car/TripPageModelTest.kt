@@ -38,6 +38,7 @@ class TripPageModelTest {
         assertEquals("SoC 55,0 % → 16,5 %", m.soc)
         assertEquals("36,0", m.distance)
         assertEquals(29.8f / 36f, m.evShare, 1e-4f)
+        assertEquals(6.2f / 36f, m.iceShare, 1e-4f)
         assertEquals("EV 29,8 km", m.evKm)
         assertEquals("termico 6,2 km", m.iceKm)
         assertEquals("4,3", m.batteryNet)
@@ -69,6 +70,22 @@ class TripPageModelTest {
     fun longTrip_durationInHours() {
         val long = trip.copy(endMs = start + 65 * 60_000L)
         assertEquals("dalle 09:46 • 1 h 05 min", TripPageModel.of(TripLog(current = long), long.endMs, utc).period)
+    }
+
+    @Test
+    fun tripJustStarted_barIsEmpty() {
+        // Subito dopo l'azzeramento: 0 km, la barra non deve sembrare tutta "termico"
+        val fresh = trip.copy(
+            startMs = trip.endMs, speedDistanceKm = 0.0, evDistanceKm = 0.0, fuelLiters = 0.0,
+            startDischargedKwh = 1005.4f, startChargedKwh = 901.1f, startSocPct = 16.5f
+        )
+        val m = TripPageModel.of(TripLog(current = fresh), fresh.endMs, utc)
+        assertEquals(0f, m.evShare, 0f)
+        assertEquals(0f, m.iceShare, 0f)
+        assertEquals("0,0", m.distance)
+        assertEquals("erogati 0,0 • recuperati 0,0", m.batteryDetail)
+        assertEquals("stima dal MAF", m.fuelDetail)
+        assertEquals("in ibrido sarebbero serviti 0,00 L (5,0 L/100 km)", m.savedDetail)
     }
 
     @Test

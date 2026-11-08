@@ -18,8 +18,9 @@ internal data class TripPageModel(
     val period: String,
     val soc: String,
     val distance: String,
-    /** Quota dei km percorsi in elettrico (0..1), per la barra EV/termico */
+    /** Quote dei km percorsi in elettrico e con il termico (0..1), per la barra; entrambe 0 a viaggio appena partito */
     val evShare: Float,
+    val iceShare: Float,
     val evKm: String,
     val iceKm: String,
     val batteryNet: String,
@@ -58,6 +59,7 @@ internal data class TripPageModel(
                 soc = "SoC ${one(trip.startSocPct.toDouble())} % → ${one(trip.endSocPct.toDouble())} %",
                 distance = one(distance),
                 evShare = if (distance >= 0.05) (evKm / distance).toFloat() else 0f,
+                iceShare = if (distance >= 0.05) ((distance - evKm) / distance).toFloat() else 0f,
                 evKm = "EV ${one(evKm)} km",
                 iceKm = "termico ${one(distance - evKm)} km",
                 batteryNet = one(trip.netBatteryKwh.toDouble()),
@@ -77,6 +79,7 @@ internal data class TripPageModel(
             soc = "",
             distance = NO_VALUE,
             evShare = 0f,
+            iceShare = 0f,
             evKm = "",
             iceKm = "",
             batteryNet = NO_VALUE,

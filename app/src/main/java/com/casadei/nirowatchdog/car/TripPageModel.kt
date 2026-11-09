@@ -1,28 +1,25 @@
 package com.casadei.nirowatchdog.car
 
-import com.casadei.nirowatchdog.obd.FuelSavings
 import com.casadei.nirowatchdog.obd.TripLog
-import com.casadei.nirowatchdog.obd.TripRecord
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
 /**
- * Testi della pagina "Viaggio" di Android Auto: il viaggio in corso oppure, se non ce n'è uno, l'ultimo concluso.
- * Separati dal disegno su Canvas per poterli verificare con i test JVM.
+ * Testi della pagina "Viaggio" di Android Auto: il totalizzatore, cioè tutti i viaggi dall'ultimo azzeramento
+ * fatto a mano, compreso quello in corso. Separati dal disegno su Canvas per poterli verificare con i test JVM.
  */
 internal data class TripPageModel(
     val status: Status,
     val chip: String,
     val period: String,
-    val soc: String,
     val distance: String,
-    /** Quote dei km percorsi in elettrico e con il termico (0..1), per la barra; entrambe 0 a viaggio appena partito */
-    val evShare: Float,
-    val iceShare: Float,
-    val evKm: String,
-    val iceKm: String,
+    /** Quote dei km coperti con l'energia della batteria e con la benzina (0..1), per la barra */
+    val electricShare: Float,
+    val hybridShare: Float,
+    val electricKm: String,
+    val hybridKm: String,
     val batteryNet: String,
     val batteryDetail: String,
     val fuel: String,
@@ -30,7 +27,11 @@ internal data class TripPageModel(
     val saved: String,
     val savedDetail: String
 ) {
-    enum class Status { IN_PROGRESS, LAST, NONE }
+    enum class Status { DRIVING, PAUSED, EMPTY }
+
+    /** Il totalizzatore ha qualcosa da azzerare */
+    val canReset: Boolean
+        get() = status != Status.EMPTY
 
     companion object {
         private const val NO_VALUE = "–"
@@ -39,49 +40,52 @@ internal data class TripPageModel(
             // Un viaggio "in corso" senza dati da oltre 5 minuti è in realtà concluso
             val normalized = log.normalized(nowMs)
             val current = normalized.current
-            val trip = current ?: normalized.completed.firstOrNull() ?: return empty()
-
-            val time = SimpleDateFormat("HH:mm", Locale.ITALY).apply { timeZone = zone }
+            val c = normalized.counter
             val dayTime = SimpleDateFormat("dd/MM HH:mm", Locale.ITALY).apply { timeZone = zone }
-            val inProgress = current != null
-            val period = if (inProgress) {
-                "dalle ${time.format(Date(trip.startMs))} • ${duration(trip.durationMs)}"
-            } else {
-                "${dayTime.format(Date(trip.startMs))}–${time.format(Date(trip.endMs))} • ${duration(trip.durationMs)}"
+            if (current == null && c.trips == 0) {
+                val period = if (normalized.counterSinceMs > 0L) {
+                    "azzerato il ${dayTime.format(Date(normalized.counterSinceMs))} • riparte con il prossimo viaggio"
+                } else {
+                    "si compila da solo con Android Auto e dongle OBD collegati"
+                }
+                return empty(period)
             }
 
-            val distance = trip.distanceKm
-            val evKm = trip.evDistanceKm.coerceIn(0.0, distance.coerceAtLeast(0.0))
+            // Il viaggio appena partito entra nelle somme solo quando diventa significativo, ma si conta già
+            val trips = c.trips + if (current != null && !current.isMeaningful) 1 else 0
+            val since = c.firstStartMs.takeIf { it > 0L } ?: current?.startMs ?: nowMs
+            val distance = c.distanceKm
+            val h = c.hybridLitersPer100Km
             return TripPageModel(
-                status = if (inProgress) Status.IN_PROGRESS else Status.LAST,
-                chip = if (inProgress) "VIAGGIO IN CORSO" else "ULTIMO VIAGGIO",
-                period = period,
-                soc = "SoC ${one(trip.startSocPct.toDouble())} % → ${one(trip.endSocPct.toDouble())} %",
+                status = if (current != null) Status.DRIVING else Status.PAUSED,
+                chip = if (current != null) "IN VIAGGIO" else "IN PAUSA",
+                period = "dal ${dayTime.format(Date(since))} • $trips ${if (trips == 1) "viaggio" else "viaggi"} • " +
+                    duration(c.drivingMs),
                 distance = one(distance),
-                evShare = if (distance >= 0.05) (evKm / distance).toFloat() else 0f,
-                iceShare = if (distance >= 0.05) ((distance - evKm) / distance).toFloat() else 0f,
-                evKm = "EV ${one(evKm)} km",
-                iceKm = "termico ${one(distance - evKm)} km",
-                batteryNet = one(trip.netBatteryKwh.toDouble()),
-                batteryDetail = batteryDetail(trip),
-                fuel = two(trip.fuelLiters),
-                fuelDetail = trip.litersPer100Km?.let { "${one(it)} L/100 km • stima dal MAF" } ?: "stima dal MAF",
-                saved = two(trip.savedFuelLiters),
-                savedDetail = "in ibrido sarebbero serviti ${two(trip.hybridReferenceLiters)} L " +
-                    "(${one(FuelSavings.HYBRID_REFERENCE_L_PER_100KM)} L/100 km)"
+                electricShare = if (distance >= 0.05) (c.electricKm / distance).toFloat() else 0f,
+                hybridShare = if (distance >= 0.05) (c.hybridKm / distance).toFloat() else 0f,
+                electricKm = "elettrico ≈ ${one(c.electricKm)} km",
+                hybridKm = "ibrido ≈ ${one(c.hybridKm)} km",
+                batteryNet = one(c.netBatteryKwh),
+                batteryDetail = "erogati ${one(c.batteryOutKwh)} • recuperati ${one(c.batteryInKwh)} • " +
+                    "EV ${one(c.evKwhPer100Km)} kWh/100 km",
+                fuel = two(c.fuelLiters),
+                fuelDetail = (c.litersPer100Km?.let { "media ${one(it)} L/100 km • " } ?: "") +
+                    "ibrido ${one(h)} L/100 km " + if (c.hybridMeasured) "(misurato)" else "(valore iniziale)",
+                saved = two(c.savedFuelLiters),
+                savedDetail = "in solo ibrido sarebbero serviti ${two(c.hybridReferenceLiters)} L (${one(h)} L/100 km)"
             )
         }
 
-        private fun empty() = TripPageModel(
-            status = Status.NONE,
-            chip = "NESSUN VIAGGIO",
-            period = "si registra da solo con Android Auto e dongle OBD collegati",
-            soc = "",
+        private fun empty(period: String) = TripPageModel(
+            status = Status.EMPTY,
+            chip = "NESSUN DATO",
+            period = period,
             distance = NO_VALUE,
-            evShare = 0f,
-            iceShare = 0f,
-            evKm = "",
-            iceKm = "",
+            electricShare = 0f,
+            hybridShare = 0f,
+            electricKm = "",
+            hybridKm = "",
             batteryNet = NO_VALUE,
             batteryDetail = "",
             fuel = NO_VALUE,
@@ -89,11 +93,6 @@ internal data class TripPageModel(
             saved = NO_VALUE,
             savedDetail = ""
         )
-
-        private fun batteryDetail(t: TripRecord): String {
-            val base = "erogati ${one(t.batteryOutKwh.toDouble())} • recuperati ${one(t.batteryInKwh.toDouble())}"
-            return t.kwhPer100Km?.let { "$base • ${one(it)} kWh/100 km" } ?: base
-        }
 
         private fun one(v: Double) = "%.1f".format(Locale.ITALY, v)
         private fun two(v: Double) = "%.2f".format(Locale.ITALY, v)

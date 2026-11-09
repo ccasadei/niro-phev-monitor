@@ -1,5 +1,6 @@
 package com.casadei.nirowatchdog.phone
 
+import com.casadei.nirowatchdog.obd.FuelSavings
 import com.casadei.nirowatchdog.obd.TripLog
 import com.casadei.nirowatchdog.obd.TripTotals
 import java.text.SimpleDateFormat
@@ -8,7 +9,11 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
-/** Testo del registro viaggi mostrato nell'app telefono: totale di oggi, viaggio in corso, ultimi viaggi. */
+/**
+ * Testo del registro viaggi mostrato nell'app telefono: totalizzatore con le medie misurate, totale di oggi,
+ * viaggio in corso, ultimi viaggi. La benzina risparmiata dei singoli viaggi usa la media in ibrido del
+ * totalizzatore, la stima più affidabile disponibile.
+ */
 internal object TripLogText {
 
     private const val MAX_LISTED_TRIPS = 30
@@ -24,21 +29,40 @@ internal object TripLogText {
 
         val time = SimpleDateFormat("HH:mm", Locale.ITALY).apply { timeZone = zone }
         val dayTime = SimpleDateFormat("dd/MM HH:mm", Locale.ITALY).apply { timeZone = zone }
+        val counter = log.counter
+        val hybrid = counter.hybridLitersPer100Km
 
         return buildString {
+            if (counter.trips == 0) {
+                appendLine("TOTALIZZATORE: azzerato, riparte con il prossimo viaggio")
+            } else {
+                appendLine(
+                    "TOTALIZZATORE dal ${dayTime.format(Date(counter.firstStartMs))} " +
+                        "(${counter.trips} ${if (counter.trips == 1) "viaggio" else "viaggi"}): " +
+                        totalsLine(counter)
+                )
+                appendLine(
+                    "   elettrico ≈ ${km(counter.electricKm)} km a ${kwh(counter.evKwhPer100Km)} kWh/100 km • " +
+                        "ibrido ≈ ${km(counter.hybridKm)} km a ${"%.1f".format(Locale.ITALY, hybrid)} L/100 km " +
+                        if (counter.hybridMeasured) "(misurato)" else "(valore iniziale)"
+                )
+                appendLine("   si azzera con due tocchi sull'intestazione della pagina Viaggio di Android Auto")
+            }
+            appendLine()
+
             val today = all.filter { sameDay(it.startMs, nowMs, zone) }
             if (today.isEmpty()) {
                 appendLine("OGGI: nessun viaggio")
             } else {
-                appendLine("OGGI: ${totalsLine(TripTotals.of(today))}")
+                appendLine("OGGI: ${totalsLine(TripTotals.of(today), hybrid)}")
             }
 
             log.current?.let { cur ->
                 appendLine()
                 appendLine(
                     "▶ In corso dalle ${time.format(Date(cur.startMs))} — ${km(cur.distanceKm)} km " +
-                        "(EV ${km(cur.evDistanceKm)}) • ${kwh(cur.netBatteryKwh.toDouble())} kWh netti • " +
-                        "${liters(cur.fuelLiters)} L • risparmiati ${liters(cur.savedFuelLiters)} L"
+                        "(termico spento ${km(cur.evDistanceKm)}) • ${kwh(cur.netBatteryKwh.toDouble())} kWh netti • " +
+                        "${liters(cur.fuelLiters)} L • risparmiati ${liters(cur.savedFuelLiters(hybrid))} L"
                 )
             }
 
@@ -46,7 +70,7 @@ internal object TripLogText {
                 appendLine()
                 appendLine(
                     "${dayTime.format(Date(t.startMs))}–${time.format(Date(t.endMs))} (${duration(t.durationMs)}) — " +
-                        "${km(t.distanceKm)} km (EV ${km(t.evDistanceKm)})"
+                        "${km(t.distanceKm)} km (termico spento ${km(t.evDistanceKm)})"
                 )
                 appendLine(
                     "   batteria: erogati ${kwh(t.batteryOutKwh.toDouble())} kWh, rientrati ${kwh(t.batteryInKwh.toDouble())}" +
@@ -55,16 +79,19 @@ internal object TripLogText {
                 )
                 appendLine(
                     "   benzina: ${liters(t.fuelLiters)} L stimati${per100(t.litersPer100Km, "L")}" +
-                        " • risparmiati ${liters(t.savedFuelLiters)} L con l'EV"
+                        " • risparmiati ${liters(t.savedFuelLiters(hybrid))} L con l'EV"
                 )
             }
         }.trimEnd()
     }
 
-    private fun totalsLine(t: TripTotals): String =
-        "${km(t.distanceKm)} km (EV ${km(t.evDistanceKm)}) • batteria ${kwh(t.netBatteryKwh)} kWh netti" +
+    /** Riga di somme; la benzina risparmiata usa [hybridLitersPer100Km], di default la media misurata nelle somme stesse */
+    private fun totalsLine(t: TripTotals, hybridLitersPer100Km: Double = t.hybridLitersPer100Km): String {
+        val saved = FuelSavings.savedLiters(t.distanceKm, t.fuelLiters, hybridLitersPer100Km)
+        return "${km(t.distanceKm)} km (termico spento ${km(t.evDistanceKm)}) • batteria ${kwh(t.netBatteryKwh)} kWh netti" +
             "${per100(t.kwhPer100Km, "kWh")} • benzina ${liters(t.fuelLiters)} L${per100(t.litersPer100Km, "L")}" +
-            " • risparmiati ${liters(t.savedFuelLiters)} L"
+            " • risparmiati ${liters(saved)} L"
+    }
 
     private fun sameDay(aMs: Long, bMs: Long, zone: TimeZone): Boolean {
         val a = Calendar.getInstance(zone).apply { timeInMillis = aMs }

@@ -34,14 +34,16 @@ class TripRecorderTest {
         fuelLh: Float = 0f,
         discharged: Float = 1000f,
         charged: Float = 900f,
-        soc: Float = 80f
+        soc: Float = 80f,
+        kw: Float = 0.6f
     ) = NiroTelemetryState(
         vehicleSpeedKmh = speed,
         iceRpm = rpm,
         smoothedFuelLh = fuelLh,
         cumulativeDischargedKwh = discharged,
         cumulativeChargedKwh = charged,
-        socBms = soc
+        socBms = soc,
+        hvPowerKw = kw
     )
 
     /** Un campione al secondo per [seconds] secondi dopo il primo */
@@ -153,26 +155,121 @@ class TripRecorderTest {
     }
 
     @Test
-    fun closeNow_archivesTripAndNextSampleStartsFromZero() {
+    fun evOnlyDriving_measuredOnlyWithEngineOffAndBatteryAboveReserve() {
+        val r = recorder()
+        r.drive(36) { state(speed = 100, rpm = 0, soc = 80f, kw = 18f) }
+        val ev = r.snapshot.current!!
+        assertEquals(1.0, ev.evOnlyKm, 1e-9)
+        assertEquals(0.18, ev.evOnlyKwh, 1e-9) // 18 kW per 36 s
+
+        // Batteria in riserva: il termico spento è ibrido, non guida elettrica
+        now += TripRecorder.TRIP_GAP_MS + 1
+        r.drive(36) { state(speed = 100, rpm = 0, soc = 16f, kw = 18f) }
+        val reserve = r.snapshot.current!!
+        assertEquals(1.0, reserve.evDistanceKm, 1e-9)
+        assertEquals(0.0, reserve.evOnlyKm, 1e-9)
+
+        // Termico acceso: benzina, nessuna misura elettrica
+        now += TripRecorder.TRIP_GAP_MS + 1
+        r.drive(36) { state(speed = 100, rpm = 2000, fuelLh = 6f, soc = 80f, kw = 5f) }
+        assertEquals(0.0, r.snapshot.current!!.evOnlyKm, 1e-9)
+    }
+
+    @Test
+    fun counter_keepsTripsAcrossStopsAndRestarts() {
+        val store = MemoryStore()
+        val r = recorder(store)
+        r.drive(36) { state(speed = 100) }
+        now += 3_600_000L // sosta di un'ora: il viaggio si chiude, il totalizzatore resta
+        r.drive(72) { state(speed = 100) }
+
+        assertEquals(1, r.snapshot.completed.size)
+        assertEquals(2, r.snapshot.counter.trips)
+        assertEquals(3.0, r.snapshot.counter.distanceKm, 1e-9)
+
+        // Dopo un riavvio dell'app (e un'altra sosta lunga) il totalizzatore è ancora lì
+        r.persist()
+        now += 3_600_000L
+        val restarted = recorder(store)
+        assertEquals(2, restarted.snapshot.counter.trips)
+        assertEquals(3.0, restarted.snapshot.counter.distanceKm, 1e-9)
+    }
+
+    @Test
+    fun resetCounter_closesTripKeepsHistoryAndStartsFromZero() {
         val store = MemoryStore()
         val events = mutableListOf<String>()
         val r = TripRecorder(store, clock = { now }, onEvent = { events += it })
-        r.closeNow() // nessun viaggio: niente da fare
-        assertTrue(events.isEmpty())
+        r.drive(36) { state(speed = 100) }
+        now += 3_600_000L
+        r.drive(36) { state(speed = 100) }
 
-        r.drive(36) { state(speed = 100, discharged = 1000f) }
-        r.closeNow()
+        r.resetCounter()
+        // Eventi: iniziato, chiuso (sosta), iniziato, azzeramento
+        assertEquals("Totalizzatore azzerato a mano: 2,0 km, 0,0 kWh netti, 0,00 L, risparmiati 0,10 L", events[3])
         assertNull(r.snapshot.current)
-        assertEquals(1, store.log.completed.size)
-        assertEquals(1.0, store.log.completed[0].speedDistanceKm, 1e-9)
-        assertEquals("Viaggio chiuso a mano dalla pagina Viaggio", events[1])
+        assertEquals(2, store.log.completed.size) // l'elenco dei viaggi resta
+        assertEquals(TripTotals.ZERO, store.log.counter)
+        assertEquals(now, store.log.counterSinceMs)
 
-        // Un secondo dopo il polling prosegue: nuovo viaggio da zero
+        // Il polling prosegue: nuovo viaggio, l'unico nel totalizzatore
         now += 1000
-        r.onSample(state(speed = 100, discharged = 1000f), null)
-        val fresh = r.snapshot.current!!
-        assertEquals(now, fresh.startMs)
-        assertEquals(0.0, fresh.speedDistanceKm, 1e-9)
+        r.drive(36) { state(speed = 100) }
+        assertEquals(1, r.snapshot.counter.trips)
+        assertEquals(1.0, r.snapshot.counter.distanceKm, 1e-9)
+    }
+
+    @Test
+    fun legacyLog_counterStartsFromAllTripsAndEvTripsMeasureConsumption() {
+        val legacy = JSONObject(
+            """
+            {"version":1,"completed":[
+              {"startMs":1000,"endMs":2000,"speedDistanceKm":20.0,"evDistanceKm":20.0,"startSocPct":90,"endSocPct":63,
+               "startDischargedKwh":1000,"endDischargedKwh":1003.5,"startChargedKwh":900,"endChargedKwh":900.5,"fuelLiters":0.0},
+              {"startMs":3000,"endMs":4000,"speedDistanceKm":100.0,"evDistanceKm":40.0,"startSocPct":63,"endSocPct":63,
+               "startDischargedKwh":1003.5,"endDischargedKwh":1013.5,"startChargedKwh":900.5,"endChargedKwh":910.5,"fuelLiters":4.0}
+            ]}
+            """.trimIndent()
+        )
+        val log = TripLog.fromJson(legacy)
+
+        // Il viaggio senza benzina vale come misura del consumo elettrico, quello ibrido no
+        assertEquals(100.0, log.completed[1].distanceKm, 1e-9)
+        assertEquals(0.0, log.completed[1].evOnlyKm, 1e-9)
+        assertEquals(20.0, log.completed[0].evOnlyKm, 1e-9)
+        assertEquals(3.0, log.completed[0].evOnlyKwh, 1e-9)
+
+        assertEquals(2, log.counter.trips)
+        assertEquals(120.0, log.counter.distanceKm, 1e-9)
+        assertEquals(1000L, log.counter.firstStartMs)
+        assertEquals(log, TripLog.fromJson(JSONObject(log.toJson().toString())))
+    }
+
+    @Test
+    fun fuelSavings_fromMeasuredConsumptions() {
+        // 20 km in elettrico con 3 kWh, poi 100 km in ibrido con 4 L e batteria in pari
+        val t = TripTotals(
+            distanceKm = 120.0, batteryOutKwh = 13.5, batteryInKwh = 10.5, fuelLiters = 4.0,
+            evOnlyKm = 20.0, evOnlyKwh = 3.0, trips = 2
+        )
+        assertEquals(15.0, t.evKwhPer100Km, 1e-9) // (3 kWh + 3 kWh iniziali) / (20 km + 20 km)
+        assertEquals(20.0, t.electricKm, 1e-9) // 3 kWh netti a 15 kWh/100 km
+        assertEquals(100.0, t.hybridKm, 1e-9)
+        assertTrue(t.hybridMeasured)
+        assertEquals(6.5 / 150.0 * 100.0, t.hybridLitersPer100Km, 1e-9) // (4 L + 2,5 L iniziali) / (100 + 50 km)
+        assertEquals(1.2, t.savedFuelLiters, 1e-9) // i 20 km elettrici a 4,33 L/100 km
+
+        // Termico mai acceso: vale il riferimento di 5,0 L/100 km
+        val ev = TripTotals(distanceKm = 36.0, batteryOutKwh = 5.4, batteryInKwh = 1.1, evOnlyKm = 36.0, evOnlyKwh = 4.3)
+        assertEquals(FuelSavings.DEFAULT_HYBRID_L_PER_100KM, ev.hybridLitersPer100Km, 1e-9)
+        assertEquals(1.8, ev.savedFuelLiters, 1e-9)
+
+        // Con centinaia di km a benzina conta quasi solo la misura (3,5 L/100 km)
+        val long = TripTotals(distanceKm = 1000.0, fuelLiters = 35.0, batteryOutKwh = 100.0, batteryInKwh = 100.0)
+        assertEquals(3.57, long.hybridLitersPer100Km, 0.01)
+
+        // Più benzina del riferimento: nessun risparmio, mai negativo
+        assertEquals(0.0, FuelSavings.savedLiters(36.0, 2.5, 5.0), 1e-9)
     }
 
     @Test
@@ -200,28 +297,11 @@ class TripRecorderTest {
         assertEquals(log, log.normalized(now)) // fermo da 1 minuto: ancora in corso
 
         val later = now + TripRecorder.TRIP_GAP_MS
-        assertEquals(TripLog(completed = listOf(trip)), log.normalized(later))
+        assertEquals(TripLog(completed = listOf(trip), counterBase = TripTotals.of(trip)), log.normalized(later))
 
         // Un viaggio senza movimento né consumi sparisce invece di finire tra i conclusi
         val trivial = TripLog(current = trip.copy(speedDistanceKm = 0.0, endDischargedKwh = 1000f))
         assertEquals(TripLog(), trivial.normalized(later))
-    }
-
-    @Test
-    fun fuelSavings_comparedToHybridReference() {
-        val trip = TripRecord(
-            startMs = 0L, endMs = 1L, speedDistanceKm = 36.0, evDistanceKm = 29.8,
-            startSocPct = 55f, endSocPct = 16.5f, startDischargedKwh = 1000f, endDischargedKwh = 1005.4f,
-            startChargedKwh = 900f, endChargedKwh = 901.1f, fuelLiters = 0.5
-        )
-        assertEquals(1.8, trip.hybridReferenceLiters, 1e-9) // 36 km a 5,0 L/100 km
-        assertEquals(1.3, trip.savedFuelLiters, 1e-9)
-
-        // Più benzina del riferimento (es. motore freddo, autostrada): nessun risparmio, mai negativo
-        assertEquals(0.0, trip.copy(fuelLiters = 2.5).savedFuelLiters, 1e-9)
-
-        val totals = TripTotals.of(listOf(trip, trip))
-        assertEquals(2.6, totals.savedFuelLiters, 1e-9)
     }
 
     @Test
@@ -318,7 +398,7 @@ class TripRecorderTest {
             startDischargedKwh = 1000f, endDischargedKwh = 1010f,
             startChargedKwh = 900f, endChargedKwh = 902f, fuelLiters = 3.5
         )
-        val lines = TripRecord.toCsv(listOf(trip)).trim().lines()
+        val lines = TripRecord.toCsv(listOf(trip), FuelSavings.DEFAULT_HYBRID_L_PER_100KM).trim().lines()
         assertEquals(2, lines.size)
         val cols = lines[1].split(";")
         assertEquals("60", cols[2])
@@ -328,5 +408,8 @@ class TripRecorderTest {
         assertEquals("3,50", cols[9])
         assertEquals("3,5", cols[10])
         assertEquals("1,50", cols[15]) // 100 km a 5,0 L/100 km = 5,00 L, meno 3,50 L usati
+
+        // Con la media in ibrido misurata dal totalizzatore
+        assertEquals("0,50", TripRecord.toCsv(listOf(trip), 4.0).trim().lines()[1].split(";")[15])
     }
 }

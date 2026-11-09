@@ -279,26 +279,26 @@ class CockpitSurfaceScreen(
                 return
             }
 
-            // Nella vista Viaggio, toccando l'intestazione si chiude il viaggio in corso (con conferma)
+            // Nella vista Viaggio, toccando l'intestazione si azzera il totalizzatore (con conferma)
             if (currentMode == MODE_TRIP && tripResetHitRect.contains(x, y)) {
                 when {
                     now < tripResetConfirmDeadlineMs -> {
-                        // Secondo tocco entro 5 secondi: chiude il viaggio, il prossimo parte da zero
-                        TelemetryRepository.closeCurrentTrip()
+                        // Secondo tocco entro 5 secondi: azzera, il prossimo viaggio riparte da zero
+                        TelemetryRepository.resetTripCounter()
                         tripResetConfirmDeadlineMs = 0L
                         tripResetDoneBannerUntilMs = now + 2600L
                         requestRender()
                         return
                     }
                     now < tripResetDoneBannerUntilMs -> return
-                    latestTrips.normalized(now).current != null -> {
+                    TripPageModel.of(latestTrips, now).canReset -> {
                         // Primo tocco: chiede conferma per 5 secondi
                         tripResetConfirmDeadlineMs = now + 5000L
                         requestRender()
                         return
                     }
                 }
-                // Nessun viaggio in corso da chiudere: il tocco cambia pagina come altrove
+                // Totalizzatore già vuoto: il tocco cambia pagina come altrove
             }
 
             // Toccando altrove ruota in circolo alla pagina successiva
@@ -1303,8 +1303,8 @@ class CockpitSurfaceScreen(
     }
 
     /**
-     * VISTA 4: Viaggio in corso (o ultimo concluso) con quattro card: distanza con ripartizione EV/termico,
-     * energia netta della batteria HV, benzina stimata e benzina risparmiata grazie all'EV.
+     * VISTA 4: totalizzatore dei viaggi dall'ultimo azzeramento, in quattro card: distanza con ripartizione
+     * elettrico/ibrido, energia netta della batteria HV, benzina stimata e benzina risparmiata grazie all'EV.
      */
     private fun drawModeTrip(
         canvas: Canvas,
@@ -1322,12 +1322,11 @@ class CockpitSurfaceScreen(
         val cardW = (width - gapX) / 2f
         val cardH = (height - headerH - headerGap - gapY) / 2f
 
-        // Intestazione: stato del viaggio, orari e durata a sinistra, SoC iniziale e finale a destra.
-        // Con un viaggio in corso, due tocchi sull'intestazione lo chiudono e il successivo riparte da zero.
+        // Intestazione: stato, inizio del totalizzatore, viaggi e tempo di guida a sinistra, suggerimento a destra.
+        // Due tocchi sull'intestazione azzerano il totalizzatore.
         val now = System.currentTimeMillis()
         val confirming = now < tripResetConfirmDeadlineMs
         val justReset = now < tripResetDoneBannerUntilMs
-        val inProgress = m.status == TripPageModel.Status.IN_PROGRESS
         val chip = when {
             confirming -> "CONFERMI?"
             justReset -> "AZZERATO"
@@ -1335,8 +1334,8 @@ class CockpitSurfaceScreen(
         }
         val chipColor = when {
             confirming -> COLOR_AMBER
-            justReset || inProgress -> COLOR_GREEN
-            m.status == TripPageModel.Status.LAST -> COLOR_CARD_FOOTER
+            justReset || m.status == TripPageModel.Status.DRIVING -> COLOR_GREEN
+            m.status == TripPageModel.Status.PAUSED -> COLOR_CARD_FOOTER
             else -> COLOR_STALE
         }
         val headerCy = top + headerH / 2f
@@ -1352,51 +1351,34 @@ class CockpitSurfaceScreen(
         canvas.drawCircle(left + chipPadX + dotR, headerCy, dotR, fill(chipColor))
         canvas.drawText(chip, chipTextX, baseline, text(chipColor, headerText * 0.92f, bold = true))
 
-        val socPaint = text(COLOR_CARD_FOOTER, headerText, bold = true, align = Paint.Align.RIGHT)
-        val socW = min(socPaint.measureText(m.soc), width * 0.30f)
-        drawAutoFitText(canvas, m.soc, left + width, baseline, width * 0.30f, socPaint)
+        // Suggerimento per azzerare a destra, più tenue, solo se c'è qualcosa da azzerare
+        val hint = if (m.canReset && !confirming && !justReset) "↻ tocca qui per azzerare" else ""
+        val hintPaint = text(COLOR_STALE, headerText, bold = true, align = Paint.Align.RIGHT)
+        val hintW = min(hintPaint.measureText(hint), width * 0.30f)
+        if (hint.isNotEmpty()) drawAutoFitText(canvas, hint, left + width, baseline, width * 0.30f, hintPaint)
 
         val periodX = shapeRect.right + headerH * 0.45f
-        val periodMaxW = left + width - socW - headerH * 0.6f - periodX
-        when {
+        val periodMaxW = left + width - hintW - headerH * 0.6f - periodX
+        val (periodText, periodColor) = when {
             confirming -> {
                 val secLeft = ((tripResetConfirmDeadlineMs - now) / 1000L + 1L).coerceIn(1L, 5L)
-                drawAutoFitText(
-                    canvas, "Tocca di nuovo qui entro $secLeft s per chiudere il viaggio e ripartire da zero",
-                    periodX, baseline, periodMaxW, text(COLOR_AMBER, headerText, bold = true)
-                )
+                "Tocca di nuovo qui entro $secLeft s per azzerare il totalizzatore" to COLOR_AMBER
             }
-            justReset -> drawAutoFitText(
-                canvas, "Viaggio chiuso e salvato nel registro: il nuovo parte da zero",
-                periodX, baseline, periodMaxW, text(COLOR_GREEN, headerText, bold = true)
-            )
-            inProgress -> {
-                // Orari in chiaro e, più tenue, il suggerimento per azzerare; ridotti insieme se non c'è spazio
-                val hint = "   ↻ tocca qui per azzerare"
-                val paint = text(COLOR_FOOTER_TEXT, headerText, bold = true)
-                val periodW = paint.measureText(m.period)
-                val total = periodW + paint.measureText(hint)
-                val scale = if (total > periodMaxW && total > 0f) periodMaxW / total else 1f
-                paint.textSize *= scale
-                canvas.drawText(m.period, periodX, baseline, paint)
-                paint.color = COLOR_STALE
-                canvas.drawText(hint, periodX + periodW * scale, baseline, paint)
-            }
-            else -> drawAutoFitText(
-                canvas, m.period, periodX, baseline, periodMaxW, text(COLOR_FOOTER_TEXT, headerText, bold = true)
-            )
+            justReset -> "Totalizzatore azzerato: riparte con il prossimo viaggio" to COLOR_GREEN
+            else -> m.period to COLOR_FOOTER_TEXT
         }
+        drawAutoFitText(canvas, periodText, periodX, baseline, periodMaxW, text(periodColor, headerText, bold = true))
 
         // Area del tocco di azzeramento: l'intestazione allargata in altezza (~48 dp) per centrarla con il dito
-        if (inProgress || confirming || justReset) {
+        if (m.canReset || confirming || justReset) {
             tripResetHitRect.set(left, top - headerH * 0.4f, left + width, gridTop + headerGap * 0.5f)
         } else {
             tripResetHitRect.setEmpty()
         }
 
-        val hasData = m.status != TripPageModel.Status.NONE
+        val hasData = m.status != TripPageModel.Status.EMPTY
 
-        // 1. Distanza con barra EV / termico
+        // 1. Distanza con barra elettrico / ibrido
         cardRect.set(left, gridTop, left + cardW, gridTop + cardH)
         drawTripCard(canvas, cardRect, COLOR_GREEN, "DISTANZA", m.distance, "km", Color.WHITE)
         if (hasData) {
@@ -1405,19 +1387,20 @@ class CockpitSurfaceScreen(
             val barH = cardH * 0.06f
             barRect.set(cardRect.left + padX, barTop, cardRect.right - padX, barTop + barH)
             canvas.drawRoundRect(barRect, barH / 2f, barH / 2f, fill(COLOR_BAR_TRACK))
-            // Verde per i km in EV, ambra per quelli con il termico; a viaggio appena partito resta il binario vuoto
-            val evShare = m.evShare.coerceIn(0f, 1f)
-            val evRight = barRect.left + barRect.width() * evShare
-            val iceRight = evRight + barRect.width() * m.iceShare.coerceIn(0f, 1f - evShare)
+            // Verde per i km coperti con l'energia della batteria, ambra per quelli a benzina (ibrido);
+            // a totalizzatore appena azzerato resta il binario vuoto
+            val electricShare = m.electricShare.coerceIn(0f, 1f)
+            val electricRight = barRect.left + barRect.width() * electricShare
+            val hybridRight = electricRight + barRect.width() * m.hybridShare.coerceIn(0f, 1f - electricShare)
             canvas.save()
-            canvas.clipRect(barRect.left, barRect.top, evRight, barRect.bottom)
+            canvas.clipRect(barRect.left, barRect.top, electricRight, barRect.bottom)
             canvas.drawRoundRect(barRect, barH / 2f, barH / 2f, fill(COLOR_GREEN))
             canvas.restore()
             canvas.save()
-            canvas.clipRect(evRight, barRect.top, iceRight, barRect.bottom)
+            canvas.clipRect(electricRight, barRect.top, hybridRight, barRect.bottom)
             canvas.drawRoundRect(barRect, barH / 2f, barH / 2f, fill(COLOR_AMBER))
             canvas.restore()
-            drawTripDetail(canvas, cardRect, m.evKm, COLOR_GREEN, m.iceKm, COLOR_AMBER)
+            drawTripDetail(canvas, cardRect, m.electricKm, COLOR_GREEN, m.hybridKm, COLOR_AMBER)
         }
 
         // 2. Energia netta della batteria HV

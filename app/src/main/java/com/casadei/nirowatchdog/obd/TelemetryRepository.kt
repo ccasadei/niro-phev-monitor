@@ -137,15 +137,18 @@ object TelemetryRepository {
         tripRecorder?.clear()
     }
 
-    /** Chiude e archivia il viaggio in corso: dal prossimo ciclo di polling ne parte uno nuovo da zero. */
-    fun closeCurrentTrip() {
-        tripRecorder?.closeNow()
+    /** Azzera il totalizzatore della pagina Viaggio (chiude il viaggio in corso; l'elenco dei viaggi resta). */
+    fun resetTripCounter() {
+        tripRecorder?.resetCounter()
     }
 
-    /** Viaggi (compreso quello in corso) in CSV con separatore ';' e virgola decimale. */
+    /**
+     * Viaggi (compreso quello in corso) in CSV con separatore ';' e virgola decimale; la benzina risparmiata usa
+     * il consumo in ibrido misurato dal totalizzatore.
+     */
     fun exportTripsCsv(): String {
         val log = _trips.value
-        return TripRecord.toCsv(listOfNotNull(log.current) + log.completed)
+        return TripRecord.toCsv(listOfNotNull(log.current) + log.completed, log.counter.hybridLitersPer100Km)
     }
 
     /**

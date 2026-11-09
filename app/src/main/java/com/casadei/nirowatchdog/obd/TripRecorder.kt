@@ -39,8 +39,8 @@ internal class FileTripStore(private val file: File) : TripStore {
  *
  * - Un viaggio si apre al primo campione e si chiude quando tra due campioni passano più di [TRIP_GAP_MS]:
  *   una sosta breve (Android Auto che si scollega e ricollega, dongle che si riconnette) non lo spezza.
- *   [closeNow] lo chiude subito. I viaggi senza movimento né consumi ([TripRecord.isMeaningful]) non vengono
- *   archiviati.
+ *   I viaggi senza movimento né consumi ([TripRecord.isMeaningful]) non vengono archiviati.
+ * - Ogni viaggio concluso si somma al totalizzatore della pagina Viaggio, che si azzera solo con [resetCounter].
  * - Il viaggio in corso viene salvato ogni [SAVE_INTERVAL_MS] e con [persist] quando il polling si ferma:
  *   se Android chiude il processo, al riavvio viene ripreso (pausa breve) oppure archiviato.
  *
@@ -60,6 +60,8 @@ internal class TripRecorder(
         const val MAX_INTEGRATION_STEP_MS = 5_000L
         const val SAVE_INTERVAL_MS = 30_000L
         const val MAX_STORED_TRIPS = 500
+        /** Margine sopra la riserva HEV oltre il quale il termico spento vuol dire guida elettrica vera e propria */
+        const val EV_ONLY_SOC_MARGIN = 2f
     }
 
     private var log: TripLog
@@ -108,6 +110,8 @@ internal class TripRecorder(
             var speedKm = cur.speedDistanceKm
             var evKm = cur.evDistanceKm
             var fuel = cur.fuelLiters
+            var evOnlyKm = cur.evOnlyKm
+            var evOnlyKwh = cur.evOnlyKwh
             val stepMs = now - lastSampleMs
             if (stepMs in 1..MAX_INTEGRATION_STEP_MS) {
                 val hours = stepMs / 3_600_000.0
@@ -115,6 +119,12 @@ internal class TripRecorder(
                 speedKm += stepKm
                 if (s.isEvMode) {
                     evKm += stepKm
+                    // Guida elettrica vera e propria (non l'ibrido a termico spento con la batteria in riserva):
+                    // misura il consumo elettrico, comprese le soste con clima e servizi accesi
+                    if (s.socBms > NiroTelemetryState.HEV_FLOOR_BMS_SOC + EV_ONLY_SOC_MARGIN) {
+                        evOnlyKm += stepKm
+                        evOnlyKwh += s.hvPowerKw * hours
+                    }
                 } else {
                     fuel += s.smoothedFuelLh * hours
                 }
@@ -124,6 +134,8 @@ internal class TripRecorder(
                 speedDistanceKm = speedKm,
                 evDistanceKm = evKm,
                 fuelLiters = fuel,
+                evOnlyKm = evOnlyKm,
+                evOnlyKwh = evOnlyKwh,
                 endSocPct = s.socBms,
                 endDischargedKwh = s.cumulativeDischargedKwh,
                 endChargedKwh = s.cumulativeChargedKwh,
@@ -141,14 +153,22 @@ internal class TripRecorder(
     }
 
     /**
-     * Chiude subito il viaggio in corso (azzeramento dalla pagina Viaggio): viene archiviato come gli altri e il
-     * prossimo campione ne apre uno nuovo da zero.
+     * Azzera il totalizzatore (pagina Viaggio): chiude e archivia il viaggio in corso, poi riparte da zero; il
+     * prossimo campione apre un viaggio nuovo che conta nel totalizzatore. L'elenco dei viaggi resta.
      */
     @Synchronized
-    fun closeNow() {
-        if (log.current == null) return
-        onEvent("Viaggio chiuso a mano dalla pagina Viaggio")
-        closeCurrent()
+    fun resetCounter() {
+        val c = log.counter
+        onEvent(
+            String.format(
+                Locale.ITALY, "Totalizzatore azzerato a mano: %.1f km, %.1f kWh netti, %.2f L, risparmiati %.2f L",
+                c.distanceKm, c.netBatteryKwh, c.fuelLiters, c.savedFuelLiters
+            )
+        )
+        if (log.current != null) closeCurrent()
+        log = log.copy(counterSinceMs = clock(), counterBase = TripTotals.ZERO)
+        persist()
+        onChange(log)
     }
 
     /** Salva subito il viaggio in corso (es. quando il polling si interrompe senza chiuderlo). */
@@ -172,8 +192,8 @@ internal class TripRecorder(
 
     private fun closeCurrent() {
         val cur = log.current ?: return
-        val completed = if (cur.isMeaningful) (listOf(cur) + log.completed).take(MAX_STORED_TRIPS) else log.completed
-        log = TripLog(completed = completed, current = null)
+        val closed = log.closingCurrent()
+        log = closed.copy(completed = closed.completed.take(MAX_STORED_TRIPS))
         persist()
         onEvent(
             if (cur.isMeaningful) {

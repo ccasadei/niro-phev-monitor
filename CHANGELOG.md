@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.0](https://github.com/ccasadei/niro-phev-monitor/compare/v1.1.0...v1.2.0) (2026-11-09)
+
+
+### Novità
+
+* azzeramento del viaggio dalla pagina Viaggio con doppio tocco sull'intestazione ([771a59a](https://github.com/ccasadei/niro-phev-monitor/commit/771a59a3aa4342e57c663d9c5c2f9d0f249b89e3))
+* log eventi persistente in files/events.log ([771a59a](https://github.com/ccasadei/niro-phev-monitor/commit/771a59a3aa4342e57c663d9c5c2f9d0f249b89e3))
+* pagina Viaggio su Android Auto con km, kWh, benzina e litri risparmiati grazie all'EV ([771a59a](https://github.com/ccasadei/niro-phev-monitor/commit/771a59a3aa4342e57c663d9c5c2f9d0f249b89e3))
+* totalizzatore nella pagina Viaggio e medie di consumo misurate ([#4](https://github.com/ccasadei/niro-phev-monitor/issues/4)) ([e9c77e5](https://github.com/ccasadei/niro-phev-monitor/commit/e9c77e59d9bcb62c67b414a80a096174d1e3e0ae))
+
+
+### Correzioni
+
+* il viaggio non si chiude più allo scollegamento di Android Auto e una sosta breve non lo spezza ([771a59a](https://github.com/ccasadei/niro-phev-monitor/commit/771a59a3aa4342e57c663d9c5c2f9d0f249b89e3))
+
 ## [1.1.0](https://github.com/ccasadei/niro-phev-monitor/compare/v1.0.0...v1.1.0) (2026-11-01)
 
 
